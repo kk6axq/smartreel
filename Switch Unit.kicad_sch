@@ -1,0 +1,244 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "accb9b06-ac87-4e87-a64a-88121d16ca47")
+	(paper "A4")
+	(lib_symbols)
+	(wire
+		(pts
+			(xy 116.84 69.85) (xy 120.65 69.85)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "398071a2-de43-4494-bf33-3d45d462abb5")
+	)
+	(wire
+		(pts
+			(xy 115.57 55.88) (xy 120.65 55.88)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "932ee0aa-7362-443b-b1c3-f3635ce5c983")
+	)
+	(hierarchical_label "SW_REEL"
+		(shape output)
+		(at 115.57 55.88 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "1efd57df-1738-4169-bc90-77a836ee2e54")
+	)
+	(hierarchical_label "SW_DIVIDER"
+		(shape output)
+		(at 116.84 69.85 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right)
+		)
+		(uuid "b63e7215-1692-480f-b02d-f26c0fe1f423")
+	)
+	(sheet
+		(at 120.65 67.31)
+		(size 12.7 4.572)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "b81f1d5b-0c50-49c1-9330-a25fc0c37e44")
+		(property "Sheetname" "Divider Switch"
+			(at 120.65 66.5984 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "single_switch.kicad_sch"
+			(at 120.65 72.4666 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(pin "SW" output
+			(at 120.65 69.85 180)
+			(uuid "ff63e7c9-0800-4a88-9012-85c0b05bfae0")
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "SmartReel"
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/92d3a07a-4a01-4246-bbcc-487d2929a7b5/b1a27491-7349-4802-9c77-9af819063ed7"
+					(page "17")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/92d3a07a-4a01-4246-bbcc-487d2929a7b5/39934d67-838a-464a-8901-5c691aeaca81"
+					(page "20")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/92d3a07a-4a01-4246-bbcc-487d2929a7b5/867803f5-111a-4865-958a-59ee8c22bd35"
+					(page "23")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/92d3a07a-4a01-4246-bbcc-487d2929a7b5/99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e"
+					(page "26")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/faa8acab-445d-4d6f-9f29-2dbb3a540aee/b1a27491-7349-4802-9c77-9af819063ed7"
+					(page "30")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/faa8acab-445d-4d6f-9f29-2dbb3a540aee/39934d67-838a-464a-8901-5c691aeaca81"
+					(page "33")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/faa8acab-445d-4d6f-9f29-2dbb3a540aee/867803f5-111a-4865-958a-59ee8c22bd35"
+					(page "36")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/faa8acab-445d-4d6f-9f29-2dbb3a540aee/99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e"
+					(page "39")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/de29b184-138b-490c-ae9f-f2df0dcb4e12/b1a27491-7349-4802-9c77-9af819063ed7"
+					(page "43")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/de29b184-138b-490c-ae9f-f2df0dcb4e12/39934d67-838a-464a-8901-5c691aeaca81"
+					(page "46")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/de29b184-138b-490c-ae9f-f2df0dcb4e12/867803f5-111a-4865-958a-59ee8c22bd35"
+					(page "49")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/de29b184-138b-490c-ae9f-f2df0dcb4e12/99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e"
+					(page "52")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/9e5c7f27-913d-4912-8379-5e1ac102b848/b1a27491-7349-4802-9c77-9af819063ed7"
+					(page "4")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/9e5c7f27-913d-4912-8379-5e1ac102b848/39934d67-838a-464a-8901-5c691aeaca81"
+					(page "7")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/9e5c7f27-913d-4912-8379-5e1ac102b848/867803f5-111a-4865-958a-59ee8c22bd35"
+					(page "10")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/9e5c7f27-913d-4912-8379-5e1ac102b848/99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e"
+					(page "13")
+				)
+			)
+		)
+	)
+	(sheet
+		(at 120.65 53.848)
+		(size 12.7 4.572)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(stroke
+			(width 0.1524)
+			(type solid)
+		)
+		(fill
+			(color 0 0 0 0.0000)
+		)
+		(uuid "cee24f76-e5b9-4a56-9779-2637f6405467")
+		(property "Sheetname" "Reel Switch"
+			(at 120.65 53.1364 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left bottom)
+			)
+		)
+		(property "Sheetfile" "single_switch.kicad_sch"
+			(at 120.65 59.0046 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left top)
+			)
+		)
+		(pin "SW" output
+			(at 120.65 55.88 180)
+			(uuid "41c7e8b1-6ca3-472a-ab37-f1895f5d90fa")
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(instances
+			(project "SmartReel"
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/92d3a07a-4a01-4246-bbcc-487d2929a7b5/b1a27491-7349-4802-9c77-9af819063ed7"
+					(page "18")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/92d3a07a-4a01-4246-bbcc-487d2929a7b5/39934d67-838a-464a-8901-5c691aeaca81"
+					(page "21")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/92d3a07a-4a01-4246-bbcc-487d2929a7b5/867803f5-111a-4865-958a-59ee8c22bd35"
+					(page "24")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/92d3a07a-4a01-4246-bbcc-487d2929a7b5/99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e"
+					(page "27")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/faa8acab-445d-4d6f-9f29-2dbb3a540aee/b1a27491-7349-4802-9c77-9af819063ed7"
+					(page "31")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/faa8acab-445d-4d6f-9f29-2dbb3a540aee/39934d67-838a-464a-8901-5c691aeaca81"
+					(page "34")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/faa8acab-445d-4d6f-9f29-2dbb3a540aee/867803f5-111a-4865-958a-59ee8c22bd35"
+					(page "37")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/faa8acab-445d-4d6f-9f29-2dbb3a540aee/99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e"
+					(page "40")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/de29b184-138b-490c-ae9f-f2df0dcb4e12/b1a27491-7349-4802-9c77-9af819063ed7"
+					(page "44")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/de29b184-138b-490c-ae9f-f2df0dcb4e12/39934d67-838a-464a-8901-5c691aeaca81"
+					(page "47")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/de29b184-138b-490c-ae9f-f2df0dcb4e12/867803f5-111a-4865-958a-59ee8c22bd35"
+					(page "50")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/de29b184-138b-490c-ae9f-f2df0dcb4e12/99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e"
+					(page "53")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/9e5c7f27-913d-4912-8379-5e1ac102b848/b1a27491-7349-4802-9c77-9af819063ed7"
+					(page "5")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/9e5c7f27-913d-4912-8379-5e1ac102b848/39934d67-838a-464a-8901-5c691aeaca81"
+					(page "8")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/9e5c7f27-913d-4912-8379-5e1ac102b848/867803f5-111a-4865-958a-59ee8c22bd35"
+					(page "11")
+				)
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c/9e5c7f27-913d-4912-8379-5e1ac102b848/99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e"
+					(page "14")
+				)
+			)
+		)
+	)
+)

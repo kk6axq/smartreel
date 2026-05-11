@@ -37,9 +37,9 @@
         "other_text_thickness": 0.15,
         "other_text_upright": false,
         "pads": {
-          "drill": 0.8,
-          "height": 1.27,
-          "width": 2.54
+          "drill": 5.3,
+          "height": 5.3,
+          "width": 5.3
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
@@ -51,7 +51,13 @@
           "min_clearance": 0.5
         }
       },
-      "diff_pair_dimensions": [],
+      "diff_pair_dimensions": [
+        {
+          "gap": 0.0,
+          "via_gap": 0.0,
+          "width": 0.0
+        }
+      ],
       "drc_exclusions": [],
       "meta": {
         "version": 2
@@ -180,7 +186,10 @@
           "td_width_to_size_filter_ratio": 0.9
         }
       ],
-      "track_widths": [],
+      "track_widths": [
+        0.0,
+        0.2
+      ],
       "tuning_pattern_settings": {
         "diff_pair_defaults": {
           "corner_radius_percentage": 80,
@@ -207,7 +216,16 @@
           "spacing": 0.6
         }
       },
-      "via_dimensions": [],
+      "via_dimensions": [
+        {
+          "diameter": 0.0,
+          "drill": 0.0
+        },
+        {
+          "diameter": 0.6,
+          "drill": 0.3
+        }
+      ],
       "zones_allow_external_fillets": false
     },
     "ipc2581": {
@@ -430,7 +448,7 @@
       "no_connect_dangling": "warning",
       "pin_not_connected": "error",
       "pin_not_driven": "error",
-      "pin_to_pin": "warning",
+      "pin_to_pin": "ignore",
       "power_pin_not_driven": "error",
       "same_local_global_label": "warning",
       "similar_label_and_power": "warning",
@@ -489,7 +507,7 @@
       "plot": "",
       "pos_files": "",
       "specctra_dsn": "",
-      "step": "SmartReel.step",
+      "step": "SmartReelV2.step",
       "svg": "",
       "vrml": ""
     },
@@ -654,6 +672,214 @@
     [
       "aed789a4-0b23-43bd-bf60-387cb49d3e4c",
       "Root"
+    ],
+    [
+      "9e5c7f27-913d-4912-8379-5e1ac102b848",
+      "4 Switch Unit0"
+    ],
+    [
+      "b1a27491-7349-4802-9c77-9af819063ed7",
+      "Channel 4"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "39934d67-838a-464a-8901-5c691aeaca81",
+      "Channel 1"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "867803f5-111a-4865-958a-59ee8c22bd35",
+      "Channel 2"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e",
+      "Channel 3"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "92d3a07a-4a01-4246-bbcc-487d2929a7b5",
+      "4 Switch Unit1"
+    ],
+    [
+      "b1a27491-7349-4802-9c77-9af819063ed7",
+      "Channel 4"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "39934d67-838a-464a-8901-5c691aeaca81",
+      "Channel 1"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "867803f5-111a-4865-958a-59ee8c22bd35",
+      "Channel 2"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e",
+      "Channel 3"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "faa8acab-445d-4d6f-9f29-2dbb3a540aee",
+      "4 Switch Unit2"
+    ],
+    [
+      "b1a27491-7349-4802-9c77-9af819063ed7",
+      "Channel 4"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "39934d67-838a-464a-8901-5c691aeaca81",
+      "Channel 1"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "867803f5-111a-4865-958a-59ee8c22bd35",
+      "Channel 2"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e",
+      "Channel 3"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "de29b184-138b-490c-ae9f-f2df0dcb4e12",
+      "4 Switch Unit3"
+    ],
+    [
+      "b1a27491-7349-4802-9c77-9af819063ed7",
+      "Channel 4"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "39934d67-838a-464a-8901-5c691aeaca81",
+      "Channel 1"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "867803f5-111a-4865-958a-59ee8c22bd35",
+      "Channel 2"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
+    ],
+    [
+      "99f4eb6e-4b1e-434d-8b8f-eeff11b44f3e",
+      "Channel 3"
+    ],
+    [
+      "b81f1d5b-0c50-49c1-9330-a25fc0c37e44",
+      "Divider Switch"
+    ],
+    [
+      "cee24f76-e5b9-4a56-9779-2637f6405467",
+      "Reel Switch"
     ]
   ],
   "text_variables": {}
