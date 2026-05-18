@@ -5,6 +5,130 @@
 	(uuid "aed789a4-0b23-43bd-bf60-387cb49d3e4c")
 	(paper "A4")
 	(lib_symbols
+		(symbol "Device:R"
+			(pin_numbers
+				(hide yes)
+			)
+			(pin_names
+				(offset 0)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "R"
+				(at 2.032 0 90)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "R"
+				(at 0 0 90)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at -1.778 0 90)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" "~"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "Resistor"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_keywords" "R res resistor"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_fp_filters" "R_*"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "R_0_1"
+				(rectangle
+					(start -1.016 -2.54)
+					(end 1.016 2.54)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+			)
+			(symbol "R_1_1"
+				(pin passive line
+					(at 0 3.81 270)
+					(length 1.27)
+					(name "~"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 0 -3.81 90)
+					(length 1.27)
+					(name "~"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "EasyEDA_Lib:A2541HWR-8P"
 			(exclude_from_sim no)
 			(in_bom yes)
@@ -1604,6 +1728,16 @@
 		)
 		(uuid "618725af-83bf-4ade-b4b6-fef2d4dfad03")
 	)
+	(text "Pull down resistor\nfor reel module sense"
+		(exclude_from_sim no)
+		(at 68.072 150.368 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+		(uuid "675a1713-2495-4369-9c20-7030fd096046")
+	)
 	(text "Close this on the farthest \nIC to prevent floating input."
 		(exclude_from_sim no)
 		(at 97.282 27.686 0)
@@ -1636,12 +1770,6 @@
 		(uuid "fa26a9d9-9846-45bc-b3e4-a6c625b4b0bd")
 	)
 	(junction
-		(at 86.36 128.27)
-		(diameter 0)
-		(color 0 0 0 0)
-		(uuid "5f64fa9c-d7d3-48c0-b5ab-d671e98029c4")
-	)
-	(junction
 		(at 52.07 128.27)
 		(diameter 0)
 		(color 0 0 0 0)
@@ -1652,6 +1780,12 @@
 		(diameter 0)
 		(color 0 0 0 0)
 		(uuid "8f3035c6-3a48-4bd0-b4f7-0c6489e89043")
+	)
+	(junction
+		(at 67.31 130.81)
+		(diameter 0)
+		(color 0 0 0 0)
+		(uuid "e6925fa8-b617-4ea2-a703-691288961c31")
 	)
 	(junction
 		(at 52.07 146.05)
@@ -1783,16 +1917,6 @@
 	)
 	(wire
 		(pts
-			(xy 46.99 105.41) (xy 46.99 104.14)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "233847e7-389f-48b0-94c7-0791f9fa6fd4")
-	)
-	(wire
-		(pts
 			(xy 52.07 107.95) (xy 43.18 107.95)
 		)
 		(stroke
@@ -1830,16 +1954,6 @@
 			(type default)
 		)
 		(uuid "3c0eeeb8-e69e-4e3c-8974-c8fd0cd22531")
-	)
-	(wire
-		(pts
-			(xy 86.36 130.81) (xy 91.44 130.81)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "465da13a-7c64-406a-93cd-6e6676d10555")
 	)
 	(wire
 		(pts
@@ -1930,6 +2044,16 @@
 			(type default)
 		)
 		(uuid "5f5a0ce9-c430-401a-86c3-f4a1a5d00f83")
+	)
+	(wire
+		(pts
+			(xy 67.31 130.81) (xy 91.44 130.81)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "5f891ab6-709d-43de-8c4d-344026a92add")
 	)
 	(wire
 		(pts
@@ -2173,6 +2297,16 @@
 	)
 	(wire
 		(pts
+			(xy 67.31 138.43) (xy 67.31 140.97)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "c0308e1c-0b2b-4667-8859-09d9e273de9d")
+	)
+	(wire
+		(pts
 			(xy 127 45.72) (xy 118.11 45.72)
 		)
 		(stroke
@@ -2220,16 +2354,6 @@
 			(type default)
 		)
 		(uuid "d1ada2b5-6e6f-410a-af39-73b64016f81e")
-	)
-	(wire
-		(pts
-			(xy 52.07 128.27) (xy 52.07 130.81)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "d1e4ffdf-26ca-477a-b574-257071540b72")
 	)
 	(wire
 		(pts
@@ -2313,7 +2437,7 @@
 	)
 	(wire
 		(pts
-			(xy 52.07 130.81) (xy 46.99 130.81)
+			(xy 46.99 130.81) (xy 67.31 130.81)
 		)
 		(stroke
 			(width 0)
@@ -2323,7 +2447,7 @@
 	)
 	(wire
 		(pts
-			(xy 43.18 105.41) (xy 46.99 105.41)
+			(xy 43.18 105.41) (xy 55.88 105.41)
 		)
 		(stroke
 			(width 0)
@@ -2341,16 +2465,6 @@
 		)
 		(uuid "fefc213d-688b-47dc-8f81-32a0aa3afa9f")
 	)
-	(wire
-		(pts
-			(xy 86.36 128.27) (xy 86.36 130.81)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "fff29695-a698-48e9-97dc-8434e355f328")
-	)
 	(label "SLATCH"
 		(at 115.57 80.01 0)
 		(effects
@@ -2360,6 +2474,16 @@
 			(justify left bottom)
 		)
 		(uuid "08be2f08-d51a-4e6d-b9aa-a352b742c640")
+	)
+	(label "RAIL_SENSE"
+		(at 55.88 105.41 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "1889473c-4891-4a16-8c04-59e765d68d12")
 	)
 	(label "SDO"
 		(at 24.13 110.49 0)
@@ -2580,6 +2704,16 @@
 			(justify right bottom)
 		)
 		(uuid "e64035ae-5fff-459c-bd90-57021537c6f3")
+	)
+	(label "RAIL_SENSE"
+		(at 67.31 130.81 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "eb618ba5-6bab-4340-9a23-93cb790fcd43")
 	)
 	(label "SLATCH"
 		(at 55.88 135.89 180)
@@ -2832,7 +2966,7 @@
 		(exclude_from_sim no)
 		(in_bom no)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "1de27b41-1b64-4b84-84d2-fcdcb5a85f75")
 		(property "Reference" "H12"
@@ -2844,7 +2978,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "MountingHole"
+		(property "Value" "M5 Mounting Hole"
 			(at 68.58 62.2299 0)
 			(effects
 				(font
@@ -2890,18 +3024,35 @@
 		)
 	)
 	(symbol
-		(lib_id "power:+5V")
-		(at 46.99 104.14 0)
-		(mirror y)
+		(lib_id "Device:R")
+		(at 67.31 134.62 0)
 		(unit 1)
 		(exclude_from_sim no)
 		(in_bom yes)
 		(on_board yes)
 		(dnp no)
 		(fields_autoplaced yes)
-		(uuid "30731506-55b7-46cb-84f6-2775c3e51ceb")
-		(property "Reference" "#PWR053"
-			(at 46.99 107.95 0)
+		(uuid "264bce39-15ef-4266-b1d7-3f5a139d4355")
+		(property "Reference" "R45"
+			(at 69.85 133.3499 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "10k"
+			(at 69.85 135.8899 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" "Resistor_SMD:R_0402_1005Metric"
+			(at 65.532 134.62 90)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2909,16 +3060,8 @@
 				(hide yes)
 			)
 		)
-		(property "Value" "+5V"
-			(at 46.99 99.06 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 46.99 104.14 0)
+		(property "Datasheet" "~"
+			(at 67.31 134.62 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2926,8 +3069,8 @@
 				(hide yes)
 			)
 		)
-		(property "Datasheet" ""
-			(at 46.99 104.14 0)
+		(property "Description" "Resistor"
+			(at 67.31 134.62 0)
 			(effects
 				(font
 					(size 1.27 1.27)
@@ -2935,22 +3078,24 @@
 				(hide yes)
 			)
 		)
-		(property "Description" "Power symbol creates a global label with name \"+5V\""
-			(at 46.99 104.14 0)
+		(property "Supplier Part" "C25744"
+			(at 67.31 134.62 0)
 			(effects
 				(font
 					(size 1.27 1.27)
 				)
-				(hide yes)
 			)
+		)
+		(pin "2"
+			(uuid "33c7a542-e350-4f81-86d7-c513a6a1dd2f")
 		)
 		(pin "1"
-			(uuid "f23ed980-d8bd-4b64-8a88-778b09f1e905")
+			(uuid "d11460d1-10cc-4864-ac8c-84574acd5c22")
 		)
 		(instances
 			(project "SmartReel"
 				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c"
-					(reference "#PWR053")
+					(reference "R45")
 					(unit 1)
 				)
 			)
@@ -3428,6 +3573,74 @@
 	)
 	(symbol
 		(lib_id "power:Earth")
+		(at 67.31 140.97 0)
+		(mirror y)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "a9ca8a1d-84d7-456e-ba9f-ef6d82df1393")
+		(property "Reference" "#PWR062"
+			(at 67.31 147.32 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "Earth"
+			(at 67.31 146.05 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Footprint" ""
+			(at 67.31 140.97 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 67.31 140.97 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"Earth\""
+			(at 67.31 140.97 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "97742594-a7f9-4956-91dd-354915e86c08")
+		)
+		(instances
+			(project "SmartReel"
+				(path "/aed789a4-0b23-43bd-bf60-387cb49d3e4c"
+					(reference "#PWR062")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:Earth")
 		(at 29.21 115.57 0)
 		(mirror y)
 		(unit 1)
@@ -3568,7 +3781,7 @@
 		(exclude_from_sim no)
 		(in_bom no)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "ba6e3474-21fd-4019-84dc-c3b5b0c1a0a6")
 		(property "Reference" "H11"
@@ -3580,7 +3793,7 @@
 				(justify left)
 			)
 		)
-		(property "Value" "MountingHole"
+		(property "Value" "M5 Mounting Hole"
 			(at 68.58 55.8799 0)
 			(effects
 				(font
@@ -3845,7 +4058,7 @@
 				)
 			)
 		)
-		(property "Value" "~"
+		(property "Value" "IDC Connector"
 			(at 38.1 101.6 0)
 			(effects
 				(font
@@ -4097,7 +4310,7 @@
 		(exclude_from_sim no)
 		(in_bom no)
 		(on_board yes)
-		(dnp no)
+		(dnp yes)
 		(fields_autoplaced yes)
 		(uuid "ece23dfd-851c-44ee-a977-e8af34262899")
 		(property "Reference" "H9"
