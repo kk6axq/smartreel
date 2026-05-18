@@ -84,5 +84,22 @@
 #define SD_MMC_CLK          12
 #define SD_MMC_D0           13
 
+// ---- RS485 link to the Core PCB (SP3485 transceiver) ----------------
+// UART1 over the GPIO matrix. DE and /RE on the SP3485 are tied
+// together to a single GPIO; HIGH = drive, LOW = listen. The ESP-IDF
+// UART driver handles the toggle automatically when configured for
+// UART_MODE_RS485_HALF_DUPLEX.
+//
+// These three pins live on the Waveshare 4.3B's expansion header
+// (GPIOs not consumed by the LCD / I2C / SD / touch). Adjust if you
+// route the SP3485 to different pins.
+#define RS485_PIN_TX        16
+#define RS485_PIN_RX        15
+#define RS485_PIN_DE         6
+
+// Baud rate. 115200 is safe on any cable length; 921600 works fine on
+// short runs and lets a 500 KB firmware image upload in ~6 s.
+#define RS485_BAUD          921600
+
 // ---- Misc ------------------------------------------------------------
 // Some board revs expose a pair of generic GPIO headers; left unused.
