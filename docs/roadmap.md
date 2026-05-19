@@ -326,6 +326,16 @@ from Phase 2 is in place.
 Order roughly by how much they bug us. Pick up between phases or
 when the touchscreen is open and we notice.
 
+- **Remove the auto-format-on-mount-failure behaviour.** Right now
+  `sdcard::init()` calls `esp_vfs_fat_sdmmc_mount` with
+  `format_if_mount_failed = true`, which is convenient during
+  bring-up but actively dangerous in the field: a slightly corrupt
+  filesystem (a flipped bit in the FAT, a bad sector) is
+  indistinguishable from "unknown format" and we'd silently wipe
+  the card and all its config + state. Change the default to
+  `false` (just fail to mount) and require the explicit Self Test ->
+  Format SD button for wipes. Keep auto-format only behind a
+  developer-mode flag if at all.
 - **Fix WiFi-scan list tearing** (`docs/known-bugs.md`). Try
   hypothesis #1 (preallocate row contexts) and #2 (drop "always
   dirty" for ConfigNetwork) first.
