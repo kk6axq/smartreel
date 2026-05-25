@@ -41,6 +41,7 @@ static const char* title_for(Screen s) {
         case Screen::ConfigSelftest: return "Self Test";
         case Screen::ConfigFwupdate: return "Firmware Update";
         case Screen::ConfigDividers: return "Divider Maintenance";
+        case Screen::QrScanner:      return "QR Scanner";
         default:                     return "";
     }
 }
@@ -58,6 +59,7 @@ static void build_into(Screen s, lv_obj_t* body) {
         case Screen::ConfigSelftest: screens::build_config_selftest(body); break;
         case Screen::ConfigFwupdate: screens::build_config_fwupdate(body); break;
         case Screen::ConfigDividers: screens::build_config_dividers(body); break;
+        case Screen::QrScanner:      screens::build_qr_scanner(body);      break;
         default: break;
     }
 }

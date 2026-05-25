@@ -25,6 +25,7 @@ enum class Screen {
     ConfigSelftest,
     ConfigFwupdate,
     ConfigDividers,
+    QrScanner,             // live scan view, opened from Self Test
     Count,
 };
 

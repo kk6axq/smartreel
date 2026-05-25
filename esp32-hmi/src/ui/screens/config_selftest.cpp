@@ -16,6 +16,7 @@ using namespace theme;
 static void on_anom_removed(lv_event_t*) { ui::anomaly_modal_raise(app::AnomalyKind::Removed); }
 static void on_anom_added(lv_event_t*)   { ui::anomaly_modal_raise(app::AnomalyKind::Added); }
 static void on_anom_divider(lv_event_t*) { ui::anomaly_modal_raise(app::AnomalyKind::Divider); }
+static void on_qr_scanner(lv_event_t*)   { ui::navigate(ui::Screen::QrScanner); }
 
 // ---- SD format confirm + result -----------------------------------
 // Two-step UX: tap Format -> confirm modal -> sdcard::format() ->
@@ -166,9 +167,11 @@ void build_config_selftest(lv_obj_t* body) {
         place(c, 0, 1);
     }
     {
-        lv_obj_t* c = test_card(sc, "QR scanner", "Echo next code");
-        button(c, "Echo", BtnKind::Default);
-        status_line(c, "Last: R-10K-0805", color::text_muted());
+        // The Tiny Code Reader is on I2C 0x0C. The dedicated QR
+        // Scanner screen polls it at 5 Hz and shows the live log.
+        lv_obj_t* c = test_card(sc, "QR scanner", "Watch live decodes");
+        button(c, "Open", BtnKind::Primary, on_qr_scanner);
+        status_line(c, "I2C 0x0C", color::text_muted());
         place(c, 1, 1);
     }
     {

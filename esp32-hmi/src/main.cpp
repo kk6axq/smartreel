@@ -33,6 +33,7 @@
 #include "storage/config_store.h"
 #include "net/wifi_mgr.h"
 #include "rs485/rs485.h"
+#include "sensors/qr_scanner.h"
 
 #include "ui/theme.h"
 #include "ui/app_state.h"
@@ -132,6 +133,11 @@ void setup() {
     // 4) Touch
     if (!touch::init()) {
         Serial.println("[boot] touch init failed (display still works)");
+    }
+
+    // 4b) QR scanner (optional, on the same I2C bus as touch + CH422G)
+    if (!qr_scanner::init()) {
+        Serial.println("[boot] QR scanner not present at 0x0C (re-probe from Self Test)");
     }
 
     // 5) SD card (optional)

@@ -19,6 +19,7 @@ void build_config_network(lv_obj_t* body);
 void build_config_selftest(lv_obj_t* body);
 void build_config_fwupdate(lv_obj_t* body);
 void build_config_dividers(lv_obj_t* body);
+void build_qr_scanner(lv_obj_t* body);
 
 // Padded, scrollable column for "form" screens. Returns the inner
 // container the caller should add form_card()s to.
