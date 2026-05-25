@@ -5,60 +5,58 @@ or as we learn more.
 
 ---
 
+(No open issues at the moment.)
+
+---
+
+# Fixed
+
 ## ESP32-HMI: screen tearing after WiFi scan populates SSID list
 
-**Symptoms**
-- Triggered the first time the user opens Configure -> Network and
-  taps Scan, or whenever the network list (re)populates.
-- Visible artifact: horizontal slices of the LCD shift sideways for
-  a few scanlines, similar to the pre-IDF-5 PSRAM-contention "wobble"
-  but localised to specific lines instead of a global jitter.
-- Tearing **persists** after the scan completes and even after
-  connecting to a network.
-- Gets noticeably worse while scrolling the form (vertical drag).
+Originally reported on the Configure -> Network screen after a WiFi
+scan, then independently reproduced on the Pick Jobs screen near the
+job-id labels and anywhere a scrolling list rebuilt. Manifested as
+horizontal slices of the LCD shifting sideways for a few scanlines
+during a refresh, worse while scrolling.
 
-**Why it probably happens**
-The IDF-5 RGB driver's bounce-buffer fix the main wobble case (LVGL
-allocator bursts vs LCD DMA refill deadline). The scan-list path
-seems to introduce a *different* contention pattern that the bounce
-buffer doesn't fully cover:
+**Root cause (real one)**: LVGL was configured with two 40-line
+partial draw buffers in PSRAM, and `flush_cb` was blitting those
+partial regions into the active framebuffer via
+`esp_lcd_panel_draw_bitmap`. The RGB DMA was simultaneously scanning
+that same framebuffer out to the panel. Whenever LVGL's blit landed
+on lines the DMA was about to read, the panel saw mid-update pixels
+-- the visible "tear" was the seam between rendered-frame-N and
+rendered-frame-N+1.
 
-1. `WiFi.scanNetworks()` blocks for ~3 s while ESP32's WiFi task does
-   heavy PSRAM allocation for scan-result buffers + 802.11 RX queues.
-2. When the scan returns, the network screen builds 10+ list rows
-   in a single LVGL refresh tick. Each row is a flex container with
-   3-4 labels + an event-cb context heap-alloc. That's a burst of
-   small PSRAM allocs on the LVGL task.
-3. Scrolling triggers LVGL to re-lay-out all visible children every
-   frame (the row container has `LV_DIR_VER` scrolling). Each
-   relayout walks the child list and reads style data from PSRAM.
+The IDF-5 bounce buffer fix we shipped earlier addressed a
+*different* problem (PSRAM contention starving the DMA's refill
+deadline). It didn't help here because the contention here is
+*content* (LVGL writes to the same FB the panel is scanning), not
+bandwidth.
 
-The "always-dirty" treatment we apply to the Network screen means
-each entry/exit rebuilds the whole list, which keeps the alloc
-churn going long after the scan itself completes.
+**Fix (landed)**: switched display.cpp to the canonical Waveshare
+"AVOID_TEARING_MODE 1" pattern: full-refresh LVGL + driver-managed
+double FB + vsync-gated swap. The two framebuffers the IDF panel
+driver allocates (num_fbs=2) are handed to LVGL directly as its
+draw buffers; LVGL renders each frame entirely into the inactive
+FB; flush_cb requests a buffer swap and blocks until the next
+vsync fires (signalled by a semaphore given from the on_vsync ISR)
+before letting LVGL reuse the just-departed FB. No partial writes
+to the active FB ever happen, so tearing is structurally
+impossible.
 
-**Hypotheses to investigate** (in rough order of likely impact)
+Confirmed gone on scroll + list rebuild + screen transition.
 
-1. **Pre-allocate the row context structs.** `RowCtx` is `new`'d
-   per row in `config_network.cpp` and freed on the row's
-   `LV_EVENT_DELETE`. Use a fixed pool of `SCAN_MAX` contexts
-   instead.
-2. **Drop the "always-dirty" mark for ConfigNetwork.** Switch to
-   dirty-on-explicit-events (after scan_run, after set_credentials)
-   instead of dirty-on-every-entry. Re-entering should pull cached
-   state from `wifi_mgr` without rebuilding the list.
-3. **Cap the visible list height** so the scrollable inner container
-   has a fixed size, eliminating LVGL re-layout of children that
-   aren't on screen.
-4. **Move the scan onto an async task** (`WiFi.scanNetworks(true)`)
-   and poll for completion from the LVGL task so the heavy WiFi
-   alloc burst doesn't happen synchronously with the user tap.
-5. If 1-4 don't help, look at LVGL's `LV_DRAW_BUF` sizing. We're
-   using 40-line LVGL line buffers; a larger refresh region might
-   reduce the number of partial draws during scroll.
+**Notes for the future**:
+- We're now LVGL-bound by the panel refresh rate (~30-40 FPS at our
+  16 MHz pclk / 800x480 timings). For an HMI this is plenty; LVGL
+  will only redraw when something is dirty.
+- If we ever want partial-area updates back for cheaper animation,
+  switch to AVOID_TEARING_MODE 3 (direct-mode + dirty-area copy
+  between the two FBs). Substantially more complex; not worth it
+  unless we see actual frame-time problems.
+- The original `lv_obj_clean()` + rebuild churn on Pick Active is no
+  longer visible. We can keep the always-dirty marker on
+  ConfigNetwork without paying for it.
 
-**Workarounds**
-- None: the artifact is cosmetic, doesn't affect functionality.
-- Avoid scrolling on the Network screen if you're staring at it.
-
-**Filed**: 2026-05-18
+**Filed**: 2026-05-18.   **Fixed**: 2026-05-19.

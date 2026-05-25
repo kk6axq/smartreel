@@ -8,43 +8,72 @@
 #include <esp_lcd_panel_rgb.h>
 #include <esp32-hal-log.h>
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+
 namespace display {
 
-static esp_lcd_panel_handle_t s_panel = nullptr;
+// ---------------------------------------------------------------------
+//  Tearing-free strategy (matches Waveshare ESP32-S3-Touch-LCD-4.3B
+//  reference, AVOID_TEARING_MODE = 1: LCD double-buffer + LVGL
+//  full-refresh).
+//
+//  - The IDF RGB panel driver owns two framebuffers in PSRAM (num_fbs=2).
+//  - We hand those FB pointers to LVGL as its two draw buffers (no
+//    extra PSRAM allocations, full-screen each).
+//  - LVGL runs in `full_refresh` mode: it redraws every frame from
+//    scratch into the currently-active draw buffer, then calls
+//    flush_cb once per frame with the entire screen rect.
+//  - flush_cb calls esp_lcd_panel_draw_bitmap for the whole screen.
+//    Because the buffer pointer matches one of the driver's known
+//    FBs, the driver just schedules the swap for the next vsync
+//    instead of copying.
+//  - The on_vsync ISR callback signals a binary semaphore; flush_cb
+//    blocks on it until the swap commits, then returns LVGL flush
+//    ready. The just-departed FB becomes LVGL's next draw target.
+//
+//  Result: LVGL never partially-updates a FB that's being scanned
+//  out. Scrolling lists, list (re)builds, anomaly-modal pop-ups all
+//  draw cleanly.
+// ---------------------------------------------------------------------
+
+static esp_lcd_panel_handle_t s_panel    = nullptr;
 static lv_disp_drv_t           s_disp_drv;
 static lv_disp_draw_buf_t      s_draw_buf;
-static lv_disp_t*              s_disp = nullptr;
-static lv_color_t*             s_buf1 = nullptr;
-static lv_color_t*             s_buf2 = nullptr;
+static lv_disp_t*              s_disp    = nullptr;
+static SemaphoreHandle_t       s_vsync_sem = nullptr;
 
-void flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* px) {
-    // For an RGB panel "draw" is just a memcpy into the framebuffer.
-    // LVGL is configured with two PSRAM buffers (display.cpp:init), so
-    // the next refresh has somewhere to draw while the panel rescans
-    // the previous frame. That's enough to avoid tearing without a
-    // vsync gate.
-    esp_lcd_panel_draw_bitmap(s_panel,
-                              area->x1, area->y1,
-                              area->x2 + 1, area->y2 + 1,
-                              px);
+static bool IRAM_ATTR on_vsync(esp_lcd_panel_handle_t /*panel*/,
+                               const esp_lcd_rgb_panel_event_data_t* /*edata*/,
+                               void* /*user_ctx*/) {
+    BaseType_t hp_task_woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_vsync_sem, &hp_task_woken);
+    return hp_task_woken == pdTRUE;
+}
+
+void flush_cb(lv_disp_drv_t* drv, const lv_area_t* /*area*/, lv_color_t* px) {
+    // LVGL is in full_refresh mode and `px` points at one of the two
+    // panel framebuffers (whichever LVGL just rendered into). The IDF
+    // driver detects that pointer match and treats this as a back-buf
+    // swap rather than a copy.
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_H_RES, LCD_V_RES, px);
+
+    // Wait for the panel to actually swap (one vsync). Until that
+    // fires, the FB LVGL just wrote is being scanned out -- LVGL must
+    // not reuse it.
+    xSemaphoreTake(s_vsync_sem, portMAX_DELAY);
     lv_disp_flush_ready(drv);
 }
 
 bool init() {
-    // 1) Pull LCD out of reset, then turn on backlight LATER (after
-    //    LVGL has drawn the first frame, to avoid flashing garbage).
+    // 1) Pull LCD out of reset. Backlight stays off until after the
+    //    first LVGL flush to avoid flashing garbage.
     ch422g::lcd_reset(false);
     delay(10);
     ch422g::lcd_reset(true);
     delay(50);
 
-    // 2) Configure the RGB panel. ESP-IDF 5.x exposes:
-    //   - num_fbs = 2          : driver-managed front/back framebuffers
-    //   - bounce_buffer_size_px: small SRAM staging buffer that the
-    //                            DMA reads from instead of going to
-    //                            PSRAM directly. Eliminates the
-    //                            scanline-shift artifact on heavy
-    //                            PSRAM contention.
+    // 2) Configure the RGB panel.
     esp_lcd_rgb_panel_config_t panel_cfg = {};
     panel_cfg.clk_src           = LCD_CLK_SRC_DEFAULT;
     panel_cfg.timings.pclk_hz   = LCD_PIXEL_CLOCK_HZ;
@@ -59,14 +88,14 @@ bool init() {
     panel_cfg.timings.flags.pclk_active_neg = 1;
     panel_cfg.data_width             = 16;
     panel_cfg.bits_per_pixel         = 16;
-    panel_cfg.num_fbs                = 2;
-    panel_cfg.bounce_buffer_size_px  = LCD_H_RES * 10;   // 10 lines
+    panel_cfg.num_fbs                = 2;                  // front + back
+    panel_cfg.bounce_buffer_size_px  = LCD_H_RES * 10;     // 10 lines
 
     panel_cfg.hsync_gpio_num = LCD_PIN_HSYNC;
     panel_cfg.vsync_gpio_num = LCD_PIN_VSYNC;
     panel_cfg.de_gpio_num    = LCD_PIN_DE;
     panel_cfg.pclk_gpio_num  = LCD_PIN_PCLK;
-    panel_cfg.disp_gpio_num  = -1;        // not used (controllerless panel)
+    panel_cfg.disp_gpio_num  = -1;
     panel_cfg.data_gpio_nums[0]  = LCD_PIN_B0;
     panel_cfg.data_gpio_nums[1]  = LCD_PIN_B1;
     panel_cfg.data_gpio_nums[2]  = LCD_PIN_B2;
@@ -90,38 +119,53 @@ bool init() {
         log_e("esp_lcd_new_rgb_panel failed");
         return false;
     }
+
+    // 3) Register the vsync callback BEFORE init so it's armed by
+    //    the time the first frame fires.
+    s_vsync_sem = xSemaphoreCreateBinary();
+    if (!s_vsync_sem) {
+        log_e("vsync semaphore alloc failed");
+        return false;
+    }
+    esp_lcd_rgb_panel_event_callbacks_t cbs = {};
+    cbs.on_vsync = on_vsync;
+    esp_lcd_rgb_panel_register_event_callbacks(s_panel, &cbs, nullptr);
+
     if (esp_lcd_panel_init(s_panel) != ESP_OK) {
         log_e("esp_lcd_panel_init failed");
         return false;
     }
 
-    // 3) Allocate two LVGL line buffers in PSRAM.
-    //    20 lines is a sweet spot between latency and overhead.
-    constexpr size_t buf_lines = 40;
-    size_t buf_pixels = LCD_H_RES * buf_lines;
-    s_buf1 = static_cast<lv_color_t*>(
-        heap_caps_aligned_alloc(64, buf_pixels * sizeof(lv_color_t),
-                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    s_buf2 = static_cast<lv_color_t*>(
-        heap_caps_aligned_alloc(64, buf_pixels * sizeof(lv_color_t),
-                                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!s_buf1 || !s_buf2) {
-        log_e("LVGL buffer allocation failed");
+    // 4) Pull the two driver-owned framebuffer pointers out of the
+    //    panel. These are full-screen PSRAM buffers we can hand to
+    //    LVGL directly -- no extra allocation needed.
+    void* fb0 = nullptr;
+    void* fb1 = nullptr;
+    if (esp_lcd_rgb_panel_get_frame_buffer(s_panel, 2, &fb0, &fb1) != ESP_OK
+        || !fb0 || !fb1) {
+        log_e("esp_lcd_rgb_panel_get_frame_buffer failed");
         return false;
     }
-    lv_disp_draw_buf_init(&s_draw_buf, s_buf1, s_buf2, buf_pixels);
+    lv_disp_draw_buf_init(&s_draw_buf,
+                          static_cast<lv_color_t*>(fb0),
+                          static_cast<lv_color_t*>(fb1),
+                          LCD_H_RES * LCD_V_RES);
 
-    // 4) Register LVGL display driver.
+    // 5) Register LVGL display driver in full_refresh + vsync-gated
+    //    mode. full_refresh tells LVGL "always redraw the whole
+    //    screen into the supplied buffer"; combined with our FB-
+    //    backed draw_buf this means each frame is rendered to the
+    //    inactive FB and swapped on vsync.
     lv_disp_drv_init(&s_disp_drv);
-    s_disp_drv.hor_res = LCD_H_RES;
-    s_disp_drv.ver_res = LCD_V_RES;
-    s_disp_drv.flush_cb = flush_cb;
-    s_disp_drv.draw_buf = &s_draw_buf;
-    s_disp_drv.full_refresh = 0;
+    s_disp_drv.hor_res      = LCD_H_RES;
+    s_disp_drv.ver_res      = LCD_V_RES;
+    s_disp_drv.flush_cb     = flush_cb;
+    s_disp_drv.draw_buf     = &s_draw_buf;
+    s_disp_drv.full_refresh = 1;
     s_disp_drv.direct_mode  = 0;
     s_disp = lv_disp_drv_register(&s_disp_drv);
 
-    // 5) Backlight on once we hand control to LVGL.
+    // 6) Backlight on once we hand control to LVGL.
     ch422g::lcd_backlight(true);
     return true;
 }
