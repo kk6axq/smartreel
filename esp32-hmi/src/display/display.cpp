@@ -11,30 +11,37 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 
+#include <string.h>
+
 namespace display {
 
 // ---------------------------------------------------------------------
-//  Tearing-free strategy (matches Waveshare ESP32-S3-Touch-LCD-4.3B
-//  reference, AVOID_TEARING_MODE = 1: LCD double-buffer + LVGL
-//  full-refresh).
+//  Tearing-free strategy: Waveshare AVOID_TEARING_MODE 3
+//      LCD double-buffer (num_fbs=2)
+//      + LVGL direct_mode (LVGL writes the dirty rect into the active
+//        FB; the FB IS the LVGL draw buffer, no copy through a small
+//        bounce-style LVGL buffer)
+//      + vsync-gated swap (flush_cb requests a swap and blocks until
+//        the panel actually flips at the next vsync)
+//      + dirty-area copy from front -> back after each swap so the
+//        FB LVGL is about to write into next has the latest pixels
+//        for unchanged regions
 //
-//  - The IDF RGB panel driver owns two framebuffers in PSRAM (num_fbs=2).
-//  - We hand those FB pointers to LVGL as its two draw buffers (no
-//    extra PSRAM allocations, full-screen each).
-//  - LVGL runs in `full_refresh` mode: it redraws every frame from
-//    scratch into the currently-active draw buffer, then calls
-//    flush_cb once per frame with the entire screen rect.
-//  - flush_cb calls esp_lcd_panel_draw_bitmap for the whole screen.
-//    Because the buffer pointer matches one of the driver's known
-//    FBs, the driver just schedules the swap for the next vsync
-//    instead of copying.
-//  - The on_vsync ISR callback signals a binary semaphore; flush_cb
-//    blocks on it until the swap commits, then returns LVGL flush
-//    ready. The just-departed FB becomes LVGL's next draw target.
+//  Why this beats AVOID_TEARING_MODE 1 (full_refresh):
+//      Mode 1 re-renders the whole screen every time anything changes.
+//      A once-per-second status-label update therefore costs a full
+//      768 KB write to PSRAM, which can starve the LCD DMA bounce
+//      buffer (visible as bandwidth tearing). Mode 3 only re-renders
+//      the actually-dirty rect, so tiny periodic updates are nearly
+//      free.
 //
-//  Result: LVGL never partially-updates a FB that's being scanned
-//  out. Scrolling lists, list (re)builds, anomaly-modal pop-ups all
-//  draw cleanly.
+//  Why this is more complex than mode 1:
+//      LVGL's "dirty rect" only describes what LVGL just drew into the
+//      currently-active FB. The OTHER FB doesn't have that drawing.
+//      So after we swap to show the just-drawn FB, we have to copy
+//      the dirty regions from the new front -> the new back, otherwise
+//      LVGL's next render (which only touches dirty pixels) would
+//      compose against stale background.
 // ---------------------------------------------------------------------
 
 static esp_lcd_panel_handle_t s_panel    = nullptr;
@@ -42,6 +49,16 @@ static lv_disp_drv_t           s_disp_drv;
 static lv_disp_draw_buf_t      s_draw_buf;
 static lv_disp_t*              s_disp    = nullptr;
 static SemaphoreHandle_t       s_vsync_sem = nullptr;
+static void*                   s_fb0     = nullptr;
+static void*                   s_fb1     = nullptr;
+
+// One LVGL refresh can produce up to LV_INV_BUF_SIZE separate dirty
+// rects; flush_cb is called once per rect. We accumulate them in
+// s_dirty[] across the refresh, then act on the whole batch on the
+// last call (detected via lv_disp_flush_is_last).
+static constexpr int MAX_DIRTY = LV_INV_BUF_SIZE;
+static lv_area_t  s_dirty[MAX_DIRTY];
+static int        s_n_dirty = 0;
 
 static bool IRAM_ATTR on_vsync(esp_lcd_panel_handle_t /*panel*/,
                                const esp_lcd_rgb_panel_event_data_t* /*edata*/,
@@ -51,17 +68,55 @@ static bool IRAM_ATTR on_vsync(esp_lcd_panel_handle_t /*panel*/,
     return hp_task_woken == pdTRUE;
 }
 
-void flush_cb(lv_disp_drv_t* drv, const lv_area_t* /*area*/, lv_color_t* px) {
-    // LVGL is in full_refresh mode and `px` points at one of the two
-    // panel framebuffers (whichever LVGL just rendered into). The IDF
-    // driver detects that pointer match and treats this as a back-buf
-    // swap rather than a copy.
-    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_H_RES, LCD_V_RES, px);
+// Copy one rectangular region from src FB to dst FB. Both FBs are
+// LCD_H_RES wide; the rect coordinates are in pixels. Each row is
+// memcpy'd directly out of PSRAM into PSRAM.
+static inline void copy_rect(void* dst, const void* src, const lv_area_t& a) {
+    const int x      = a.x1;
+    const int width  = (a.x2 - a.x1 + 1);
+    const int rows   = (a.y2 - a.y1 + 1);
+    const size_t row_bytes = (size_t)width * sizeof(lv_color_t);
+    for (int y = 0; y < rows; ++y) {
+        const lv_color_t* s = static_cast<const lv_color_t*>(src) +
+                              (a.y1 + y) * LCD_H_RES + x;
+        lv_color_t*       d = static_cast<lv_color_t*>(dst) +
+                              (a.y1 + y) * LCD_H_RES + x;
+        memcpy(d, s, row_bytes);
+    }
+}
 
-    // Wait for the panel to actually swap (one vsync). Until that
-    // fires, the FB LVGL just wrote is being scanned out -- LVGL must
-    // not reuse it.
+void flush_cb(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_map) {
+    // Stash this dirty rect so we can sync the other FB after the
+    // swap. LVGL caps the total at LV_INV_BUF_SIZE; we guard anyway.
+    if (s_n_dirty < MAX_DIRTY) {
+        s_dirty[s_n_dirty++] = *area;
+    }
+
+    // If more rects are coming for this refresh, just acknowledge and
+    // wait for the last one.
+    if (!lv_disp_flush_is_last(drv)) {
+        lv_disp_flush_ready(drv);
+        return;
+    }
+
+    // Last flush of this refresh: schedule the swap to the FB LVGL
+    // just rendered into. `color_map` is either s_fb0 or s_fb1; the
+    // IDF driver recognises the pointer and treats this as a back-
+    // buffer swap (no copy).
+    esp_lcd_panel_draw_bitmap(s_panel, 0, 0, LCD_H_RES, LCD_V_RES, color_map);
+
+    // Block until the swap actually happens at the next vsync.
     xSemaphoreTake(s_vsync_sem, portMAX_DELAY);
+
+    // After the swap, color_map IS the front (visible) FB; the OTHER
+    // one is the new back. Copy this refresh's dirty rects from front
+    // -> back so LVGL's next render starts from in-sync content.
+    void* new_back = (color_map == static_cast<lv_color_t*>(s_fb0)) ? s_fb1 : s_fb0;
+    for (int i = 0; i < s_n_dirty; ++i) {
+        copy_rect(new_back, color_map, s_dirty[i]);
+    }
+    s_n_dirty = 0;
+
     lv_disp_flush_ready(drv);
 }
 
@@ -88,8 +143,8 @@ bool init() {
     panel_cfg.timings.flags.pclk_active_neg = 1;
     panel_cfg.data_width             = 16;
     panel_cfg.bits_per_pixel         = 16;
-    panel_cfg.num_fbs                = 2;                  // front + back
-    panel_cfg.bounce_buffer_size_px  = LCD_H_RES * 10;     // 10 lines
+    panel_cfg.num_fbs                = 2;
+    panel_cfg.bounce_buffer_size_px  = LCD_H_RES * 10;
 
     panel_cfg.hsync_gpio_num = LCD_PIN_HSYNC;
     panel_cfg.vsync_gpio_num = LCD_PIN_VSYNC;
@@ -138,31 +193,30 @@ bool init() {
 
     // 4) Pull the two driver-owned framebuffer pointers out of the
     //    panel. These are full-screen PSRAM buffers we can hand to
-    //    LVGL directly -- no extra allocation needed.
-    void* fb0 = nullptr;
-    void* fb1 = nullptr;
-    if (esp_lcd_rgb_panel_get_frame_buffer(s_panel, 2, &fb0, &fb1) != ESP_OK
-        || !fb0 || !fb1) {
+    //    LVGL directly as its draw buffers.
+    if (esp_lcd_rgb_panel_get_frame_buffer(s_panel, 2, &s_fb0, &s_fb1) != ESP_OK
+        || !s_fb0 || !s_fb1) {
         log_e("esp_lcd_rgb_panel_get_frame_buffer failed");
         return false;
     }
     lv_disp_draw_buf_init(&s_draw_buf,
-                          static_cast<lv_color_t*>(fb0),
-                          static_cast<lv_color_t*>(fb1),
+                          static_cast<lv_color_t*>(s_fb0),
+                          static_cast<lv_color_t*>(s_fb1),
                           LCD_H_RES * LCD_V_RES);
 
-    // 5) Register LVGL display driver in full_refresh + vsync-gated
-    //    mode. full_refresh tells LVGL "always redraw the whole
-    //    screen into the supplied buffer"; combined with our FB-
-    //    backed draw_buf this means each frame is rendered to the
-    //    inactive FB and swapped on vsync.
+    // 5) Register LVGL driver in direct_mode. LVGL will write each
+    //    dirty rect directly into the active FB (one of s_fb0/s_fb1);
+    //    flush_cb accumulates the rects, then on the last flush of
+    //    the refresh swaps + waits for vsync + syncs the dirty rects
+    //    over to the new back FB. No full-screen renders on tiny
+    //    updates.
     lv_disp_drv_init(&s_disp_drv);
     s_disp_drv.hor_res      = LCD_H_RES;
     s_disp_drv.ver_res      = LCD_V_RES;
     s_disp_drv.flush_cb     = flush_cb;
     s_disp_drv.draw_buf     = &s_draw_buf;
-    s_disp_drv.full_refresh = 1;
-    s_disp_drv.direct_mode  = 0;
+    s_disp_drv.full_refresh = 0;
+    s_disp_drv.direct_mode  = 1;
     s_disp = lv_disp_drv_register(&s_disp_drv);
 
     // 6) Backlight on once we hand control to LVGL.
