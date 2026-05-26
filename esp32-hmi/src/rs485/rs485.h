@@ -147,4 +147,11 @@ const Stats& stats();
 void poll_pause();
 void poll_resume();
 
+// Diagnostic: pause polling, drain the UART, then count raw bytes
+// received for `ms` milliseconds. Returns the count and copies up to
+// `sample_cap` of the first bytes into `sample` (for a quick hex dump).
+// Used to bench-test the reverse link direction (Core -> HMI).
+size_t debug_raw_listen(uint32_t ms, uint8_t* sample, size_t sample_cap,
+                        size_t* sample_len);
+
 } // namespace rs485

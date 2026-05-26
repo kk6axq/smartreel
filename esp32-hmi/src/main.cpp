@@ -85,10 +85,33 @@ static void handle_console_line(const char* line) {
         esp_restart();
         return;
     }
+    if (!strcmp(line, "stats")) {
+        const rs485::Stats& s = rs485::stats();
+        Serial.printf("[rs485] tx=%lu rx=%lu crc_err=%lu timeouts=%lu retries=%lu events=%lu\n",
+                      (unsigned long)s.tx_frames, (unsigned long)s.rx_frames,
+                      (unsigned long)s.crc_errors, (unsigned long)s.timeouts,
+                      (unsigned long)s.retries, (unsigned long)s.events_received);
+        return;
+    }
+    if (!strcmp(line, "listen")) {
+        uint8_t sample[32]; size_t sn = 0;
+        size_t n = rs485::debug_raw_listen(1000, sample, sizeof(sample), &sn);
+        Serial.printf("[rs485] listen 1000ms: %u raw bytes; sample:", (unsigned)n);
+        for (size_t i = 0; i < sn; ++i) Serial.printf(" %02X", sample[i]);
+        Serial.println();
+        return;
+    }
+    if (!strcmp(line, "ping")) {
+        rs485::Status st = rs485::ping();
+        Serial.printf("[rs485] ping -> %s\n", rs485::status_str(st));
+        return;
+    }
     if (!strcmp(line, "help") || !strcmp(line, "?")) {
         Serial.println("[console] commands:");
         Serial.println("  dl | bootloader | download   reboot into UART download mode");
         Serial.println("  reboot | reset               normal reboot");
+        Serial.println("  stats                        RS485 frame counters");
+        Serial.println("  ping                         one-shot RS485 ping to Core");
         Serial.println("  help | ?                     this list");
         return;
     }

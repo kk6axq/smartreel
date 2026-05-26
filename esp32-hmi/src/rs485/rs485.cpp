@@ -26,6 +26,7 @@
 #include <Arduino.h>
 #include <esp32-hal-log.h>
 #include <driver/uart.h>
+#include <driver/gpio.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/semphr.h>
@@ -117,10 +118,21 @@ static bool uart_setup() {
     if (err != ESP_OK) { log_e("uart_driver_install: 0x%x", err); return false; }
     err = uart_param_config(UART_NUM, &cfg);
     if (err != ESP_OK) { log_e("uart_param_config: 0x%x",   err); return false; }
+    // GPIO43/44 are the chip's default UART0 console pins. GPIO43
+    // (=U0TXD) is left driven as an output by the bootloader, which
+    // fights the SP3485's RO and kills our RX. Reset both pins to a
+    // clean GPIO state so uart_set_pin can route them to UART1 via the
+    // GPIO matrix with no IOMUX/UART0 contention. (Without this, TX
+    // works but RX sees nothing -- GPIO44=U0RXD is only an input, so
+    // it was never contended.)
+    gpio_reset_pin((gpio_num_t)RS485_PIN_RX);
+    gpio_reset_pin((gpio_num_t)RS485_PIN_TX);
+    // No DE/RTS pin: the Waveshare 4.3B RS485 is auto-direction (TX
+    // line drives DE/RE in hardware), so we run plain UART mode.
     err = uart_set_pin(UART_NUM, RS485_PIN_TX, RS485_PIN_RX,
-                       RS485_PIN_DE, UART_PIN_NO_CHANGE);
+                       UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
     if (err != ESP_OK) { log_e("uart_set_pin: 0x%x",         err); return false; }
-    err = uart_set_mode(UART_NUM, UART_MODE_RS485_HALF_DUPLEX);
+    err = uart_set_mode(UART_NUM, UART_MODE_UART);
     if (err != ESP_OK) { log_e("uart_set_mode: 0x%x",        err); return false; }
     // Slightly tighter RX timeout (in baud-time units) gets us out of
     // the FIFO drain sooner during back-to-back transactions.
@@ -334,6 +346,27 @@ const Stats& stats() { return s_stats; }
 
 void poll_pause()  { s_poll_paused = true; }
 void poll_resume() { s_poll_paused = false; }
+
+size_t debug_raw_listen(uint32_t ms, uint8_t* sample, size_t sample_cap,
+                        size_t* sample_len) {
+    if (!s_inited) return 0;
+    poll_pause();
+    vTaskDelay(pdMS_TO_TICKS(5));          // let an in-flight poll finish
+    uart_flush_input(UART_NUM);
+    size_t   count = 0, sn = 0;
+    uint8_t  rx[128];
+    const uint32_t deadline = millis() + ms;
+    while ((int32_t)(millis() - deadline) < 0) {
+        int got = uart_read_bytes(UART_NUM, rx, sizeof(rx), pdMS_TO_TICKS(10));
+        if (got > 0) {
+            count += got;
+            for (int i = 0; i < got && sn < sample_cap; ++i) sample[sn++] = rx[i];
+        }
+    }
+    poll_resume();
+    if (sample_len) *sample_len = sn;
+    return count;
+}
 
 // ===================================================================
 // High-level wrappers

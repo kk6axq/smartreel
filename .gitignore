@@ -44,3 +44,7 @@ fp-info-cache
 
 # Per-machine Claude Code session state.
 .claude/
+
+# PlatformIO build output (firmware projects)
+.pio/
+**/.pio/

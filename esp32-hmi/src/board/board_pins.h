@@ -84,22 +84,24 @@
 #define SD_MMC_CLK          12
 #define SD_MMC_D0           13
 
-// ---- RS485 link to the Core PCB (SP3485 transceiver) ----------------
-// UART1 over the GPIO matrix. DE and /RE on the SP3485 are tied
-// together to a single GPIO; HIGH = drive, LOW = listen. The ESP-IDF
-// UART driver handles the toggle automatically when configured for
-// UART_MODE_RS485_HALF_DUPLEX.
+// ---- RS485 link to the Core PCB -------------------------------------
+// The Waveshare 4.3B's onboard RS485 is an AUTOMATIC direction-control
+// circuit (no MCU enable pin): direction is handled in hardware, so the
+// differential bus follows the TX line. We therefore run the UART in
+// plain UART_MODE_UART -- NOT RS485 half-duplex -- and assign no DE pin.
 //
-// These three pins live on the Waveshare 4.3B's expansion header
-// (GPIOs not consumed by the LCD / I2C / SD / touch). Adjust if you
-// route the SP3485 to different pins.
-#define RS485_PIN_TX        16
-#define RS485_PIN_RX        15
-#define RS485_PIN_DE         6
+// Pins are the ESP32-S3 UART0 lines (GPIO43/44), free because the USB-
+// CDC console owns "Serial". NOTE: TX=44 / RX=43 here is the *reverse*
+// of the chip's default U0TXD=43 / U0RXD=44 -- the board routes them
+// this way, so do not "correct" it.
+#define RS485_PIN_TX        44
+#define RS485_PIN_RX        43
+// RS485_PIN_DE intentionally undefined: direction is automatic in HW.
 
-// Baud rate. 115200 is safe on any cable length; 921600 works fine on
-// short runs and lets a 500 KB firmware image upload in ~6 s.
-#define RS485_BAUD          921600
+// Baud rate. The auto-direction transistor/RC switch on this board
+// cannot keep up at 921600 (Waveshare's reference demo runs 115200),
+// so cap at 115200. This bounds RS485 firmware-update throughput.
+#define RS485_BAUD          115200
 
 // ---- Misc ------------------------------------------------------------
 // Some board revs expose a pair of generic GPIO headers; left unused.
