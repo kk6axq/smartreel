@@ -42,10 +42,79 @@
 #include <new>
 #include <string.h>
 
+#include "esp_system.h"
+#include "soc/rtc_cntl_reg.h"
+
 #include "ui/theme.h"
 #include "ui/app_state.h"
 #include "ui/status_bar.h"
 #include "ui/screen_manager.h"
+
+// ===================================================================
+// Serial console.
+//
+// Tiny line-buffered reader on USB serial. Lets us trigger a reboot
+// into UART download mode from a running firmware — no more juggling
+// BOOT / RESET on the back of the board. The next esptool upload
+// succeeds without any button presses.
+// ===================================================================
+
+static void enter_download_mode() {
+    Serial.println("[console] rebooting into UART download mode...");
+    Serial.flush();
+    delay(50);
+    // RTC_CNTL_FORCE_DOWNLOAD_BOOT (bit 0). On the next reset the ROM
+    // bootloader checks this and enters UART download mode as if BOOT
+    // were held. Cleared by the bootloader on entry, so this is a
+    // one-shot — a subsequent normal reset boots the app again.
+    REG_WRITE(RTC_CNTL_OPTION1_REG, 0x1);
+    esp_restart();
+}
+
+static void handle_console_line(const char* line) {
+    if (!*line) return;
+    if (!strcmp(line, "dl") || !strcmp(line, "bootloader") ||
+        !strcmp(line, "download")) {
+        enter_download_mode();
+        return;
+    }
+    if (!strcmp(line, "reboot") || !strcmp(line, "reset")) {
+        Serial.println("[console] rebooting...");
+        Serial.flush();
+        delay(50);
+        esp_restart();
+        return;
+    }
+    if (!strcmp(line, "help") || !strcmp(line, "?")) {
+        Serial.println("[console] commands:");
+        Serial.println("  dl | bootloader | download   reboot into UART download mode");
+        Serial.println("  reboot | reset               normal reboot");
+        Serial.println("  help | ?                     this list");
+        return;
+    }
+    Serial.printf("[console] unknown: '%s' (try 'help')\n", line);
+}
+
+static void serial_console_poll() {
+    static char   buf[64];
+    static size_t len = 0;
+    while (Serial.available()) {
+        int ch = Serial.read();
+        if (ch < 0) break;
+        if (ch == '\r' || ch == '\n') {
+            if (len > 0) {
+                buf[len] = 0;
+                handle_console_line(buf);
+                len = 0;
+            }
+        } else if (len + 1 < sizeof(buf)) {
+            buf[len++] = (char)ch;
+        } else {
+            // overflow -- drop and reset
+            len = 0;
+        }
+    }
+}
 
 static void lvgl_task(void* /*arg*/) {
     constexpr TickType_t period = pdMS_TO_TICKS(5);
@@ -227,6 +296,7 @@ void setup() {
     Serial.begin(115200);
     delay(50);
     Serial.println("\n[boot] reel-rack HMI starting");
+    Serial.println("[boot] serial console: type 'help' for commands ('dl' = enter UART download mode)");
 
     // 1) I2C bus
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ_HZ);
@@ -307,5 +377,6 @@ void setup() {
 void loop() {
     // Reserved for application-level work (Inventree poll, RS485 IO,
     // anomaly detection). LVGL runs on its own task, see setup().
-    delay(100);
+    serial_console_poll();
+    delay(20);
 }
