@@ -35,6 +35,12 @@
 #include "net/wifi_mgr.h"
 #include "rs485/rs485.h"
 #include "sensors/qr_scanner.h"
+#include "util/lvgl_async.h"
+#include "ui/anomaly_modal.h"
+#include "ui/status_bar.h"
+
+#include <new>
+#include <string.h>
 
 #include "ui/theme.h"
 #include "ui/app_state.h"
@@ -51,33 +57,141 @@ static void lvgl_task(void* /*arg*/) {
 }
 
 // ===================================================================
-// RS485 async event handler.
+// RS485 async event dispatcher.
 //
-// The POLL task in rs485.cpp calls this from its own thread. Keep
-// it short -- any UI work has to be marshalled onto the LVGL task,
-// which we'll do once the relevant UI hooks are wired. For now we
-// just log so we can verify the wire path is working.
+// The RS485 POLL task calls on_rs485_event from its own thread. Per
+// our threading model (LVGL is the sole writer of app_state), all
+// state mutations have to happen on the LVGL task. We parse the
+// event payload here in the POLL task, allocate a tiny effect-
+// descriptor struct on the heap, and ui::dispatch_on_lvgl it; the
+// LVGL-task callback then mutates app_state, persists, and surfaces
+// any UI side effects (anomaly modal, etc.).
 // ===================================================================
+
+// Heap-passed payload from POLL task -> LVGL task for input changes.
+struct InputChangeEvent {
+    uint8_t  chain;       // 1..4 (reel_id + 1)
+    uint16_t prev_bits;   // bit N == presence of slot at position N+1
+    uint16_t new_bits;
+    uint32_t ts_ms;
+};
+
+// Apply one slot's transition. Runs on the LVGL task; takes the
+// app_state lock for its mutations.
+static void apply_slot_change(int slot_num, bool now_present) {
+    auto& st = app::state();
+    app::Slot* slot = app::slot_by_num(slot_num);
+    if (!slot) return;
+
+    // Was this change part of an active workflow's expectation?
+    bool expected = false;
+
+    // Pick workflow: removing a reel from a target slot completes
+    // that line item.
+    if (!now_present && st.active_pick_idx >= 0
+        && slot->state == app::SlotState::TARGET) {
+        auto& job = st.pick_jobs[st.active_pick_idx];
+        for (int i = 0; i < job.n_items; ++i) {
+            if (job.items[i].slot_num == slot_num && !job.items[i].picked) {
+                app::lock();
+                job.items[i].picked = true;
+                slot->state = app::SlotState::PICKED;
+                app::unlock();
+                state_store::mark_jobs_dirty();
+                state_store::mark_slot_dirty(slot_num);
+                expected = true;
+                break;
+            }
+        }
+    }
+
+    // Load workflow: inserting a reel into a target slot commits
+    // the load. mock_place_reel does the heavy lifting (clears
+    // other lit, assigns part, marks dirty).
+    if (now_present && st.load_step == app::LoadStep::Placed
+        && slot->state == app::SlotState::TARGET) {
+        app::mock_place_reel(slot_num);
+        expected = true;
+    }
+
+    if (expected) return;
+
+    // Unexpected: update slot state to reflect the anomaly and raise
+    // the modal. The anomaly content is auto-populated by
+    // mock_raise_anomaly using the first matching slot; for Phase 1
+    // that's good enough.
+    app::lock();
+    slot->state = now_present ? app::SlotState::WARN
+                              : app::SlotState::ERROR;
+    app::unlock();
+    state_store::mark_slot_dirty(slot_num);
+
+    ui::anomaly_modal_raise(now_present ? app::AnomalyKind::Added
+                                        : app::AnomalyKind::Removed);
+}
+
+static void apply_input_change(void* user) {
+    auto* ev = static_cast<InputChangeEvent*>(user);
+    if (!ev) return;
+
+    const uint16_t changed = ev->prev_bits ^ ev->new_bits;
+    for (int bit = 0; bit < 16; ++bit) {
+        if (!(changed & (1u << bit))) continue;
+        const int position = bit + 1;        // 1..16 within chain
+        const app::Slot* s = app::slot_at(ev->chain, position);
+        if (!s) continue;
+        const bool now_present = (ev->new_bits & (1u << bit)) != 0;
+        apply_slot_change(s->slot, now_present);
+    }
+    delete ev;
+}
+
 static void on_rs485_event(const rs485::Event& e, void* /*user*/) {
     switch (e.type) {
-        case rs485::EVT_INPUT_CHANGE:
-            if (e.payload_len >= 7) {
-                const uint8_t reel    = e.payload[0];
-                const uint8_t prev    = e.payload[1];
-                const uint8_t now     = e.payload[2];
-                const uint32_t ts_ms  = ((uint32_t)e.payload[3] << 24) |
-                                         ((uint32_t)e.payload[4] << 16) |
-                                         ((uint32_t)e.payload[5] <<  8) |
-                                         ((uint32_t)e.payload[6] <<  0);
-                log_i("rs485 INPUT_CHANGE reel=%u 0x%02X->0x%02X t=%lu",
-                      reel, prev, now, (unsigned long)ts_ms);
+        case rs485::EVT_INPUT_CHANGE: {
+            // Two payload shapes (per docs/smartreel-rs485-protocol.md):
+            //   9 B: reel_id(1) + prev(2 BE) + new(2 BE) + ts(4 BE)
+            //        -- 16 inputs per reel (two chained 74HC165s)
+            //   7 B: reel_id(1) + prev(1) + new(1) + ts(4 BE)
+            //        -- 8 inputs per reel (single PISO)
+            uint8_t  chain = 0;
+            uint16_t prev  = 0;
+            uint16_t now   = 0;
+            uint32_t ts    = 0;
+            if (e.payload_len == 9) {
+                chain = e.payload[0] + 1;
+                prev  = ((uint16_t)e.payload[1] << 8) | e.payload[2];
+                now   = ((uint16_t)e.payload[3] << 8) | e.payload[4];
+                ts    = ((uint32_t)e.payload[5] << 24) |
+                        ((uint32_t)e.payload[6] << 16) |
+                        ((uint32_t)e.payload[7] <<  8) |
+                        ((uint32_t)e.payload[8] <<  0);
+            } else if (e.payload_len == 7) {
+                chain = e.payload[0] + 1;
+                prev  = e.payload[1];
+                now   = e.payload[2];
+                ts    = ((uint32_t)e.payload[3] << 24) |
+                        ((uint32_t)e.payload[4] << 16) |
+                        ((uint32_t)e.payload[5] <<  8) |
+                        ((uint32_t)e.payload[6] <<  0);
+            } else {
+                log_w("rs485 INPUT_CHANGE: unexpected payload_len=%u",
+                      e.payload_len);
+                break;
             }
+            (void)ts;
+            auto* ev = new (std::nothrow) InputChangeEvent{ chain, prev, now, ts };
+            if (ev) ui::dispatch_on_lvgl(apply_input_change, ev);
             break;
+        }
 
         case rs485::EVT_REEL_INSERTED:
+            // For Phase 1b we just log. Per-chain presence tracking
+            // and "whole chain disappeared" anomaly is a future
+            // enhancement.
             if (e.payload_len >= 3) {
-                const uint8_t reel    = e.payload[0];
-                const uint16_t mv     = ((uint16_t)e.payload[1] << 8) | e.payload[2];
+                uint8_t  reel = e.payload[0];
+                uint16_t mv   = ((uint16_t)e.payload[1] << 8) | e.payload[2];
                 log_i("rs485 REEL_INSERTED reel=%u sense=%u mV", reel, mv);
             }
             break;
@@ -94,7 +208,6 @@ static void on_rs485_event(const rs485::Event& e, void* /*user*/) {
 
         case rs485::EVT_LOG:
             if (e.payload_len >= 2) {
-                // payload: level (1B), ASCII message
                 char buf[160];
                 size_t n = e.payload_len - 1;
                 if (n >= sizeof(buf)) n = sizeof(buf) - 1;

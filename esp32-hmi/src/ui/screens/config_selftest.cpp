@@ -6,7 +6,10 @@
 #include "ui/anomaly_modal.h"
 #include "ui/screen_manager.h"
 #include "storage/sdcard.h"
+#include "app/leds.h"
+#include "rs485/rs485.h"
 
+#include <esp32-hal-log.h>
 #include <stdio.h>
 
 namespace ui::screens {
@@ -17,6 +20,23 @@ static void on_anom_removed(lv_event_t*) { ui::anomaly_modal_raise(app::AnomalyK
 static void on_anom_added(lv_event_t*)   { ui::anomaly_modal_raise(app::AnomalyKind::Added); }
 static void on_anom_divider(lv_event_t*) { ui::anomaly_modal_raise(app::AnomalyKind::Divider); }
 static void on_qr_scanner(lv_event_t*)   { ui::navigate(ui::Screen::QrScanner); }
+
+// LED self-tests. Fire-and-forget through the RS485 master. If no
+// Core PCB is attached the calls just time out; the UI doesn't block.
+static void on_leds_all_white(lv_event_t*) { leds::fill_all(0xFF, 0xFF, 0xFF); }
+static void on_leds_all_off(lv_event_t*)   { leds::clear_all(); }
+// "Single slot" lights slot 12 in theme blue. Once we have a real
+// text-input widget hooked up we'll read the slot # from the form;
+// for now this is a smoke test that the per-slot path works.
+static void on_leds_single(lv_event_t*)    { leds::light_slot(12, 0x25, 0x63, 0xEB); }
+
+// RS485 chain ping: round-trip a PING to the Core. We just log the
+// result for now -- a full diag screen with per-chain stats is
+// future work.
+static void on_rs485_ping(lv_event_t*) {
+    rs485::Status s = rs485::ping();
+    log_i("rs485 ping: %s", rs485::status_str(s));
+}
 
 // ---- SD format confirm + result -----------------------------------
 // Two-step UX: tap Format -> confirm modal -> sdcard::format() ->
@@ -139,19 +159,19 @@ void build_config_selftest(lv_obj_t* body) {
     };
 
     {
-        lv_obj_t* c = test_card(sc, "All LEDs", "Cycle every slot LED");
+        lv_obj_t* c = test_card(sc, "All LEDs", "Solid white on every slot");
         lv_obj_t* br = btn_row(c);
-        button(br, "Run", BtnKind::Primary);
-        button(br, "Off", BtnKind::Default);
-        status_line(c, "Passed  18s ago", color::slot_picked());
+        button(br, "On",  BtnKind::Primary, on_leds_all_white);
+        button(br, "Off", BtnKind::Default, on_leds_all_off);
+        status_line(c, "RS485 fire-and-forget", color::text_muted());
         place(c, 0, 0);
     }
     {
-        lv_obj_t* c = test_card(sc, "Single slot", "Light one LED");
+        lv_obj_t* c = test_card(sc, "Single slot", "Light slot 12");
         lv_obj_t* br = btn_row(c);
         form_input(br, "12", 0, true);
-        button(br, "Light", BtnKind::Default);
-        status_line(c, "Idle", color::text_muted());
+        button(br, "Light", BtnKind::Default, on_leds_single);
+        status_line(c, "(input not yet editable)", color::text_muted());
         place(c, 1, 0);
     }
     {
@@ -161,9 +181,9 @@ void build_config_selftest(lv_obj_t* body) {
         place(c, 2, 0);
     }
     {
-        lv_obj_t* c = test_card(sc, "RS485 chain", "Ping chained MCUs");
-        button(c, "Ping", BtnKind::Primary);
-        status_line(c, "4 / 4 chains OK", color::slot_picked());
+        lv_obj_t* c = test_card(sc, "RS485 chain", "Ping the Core PCB");
+        button(c, "Ping", BtnKind::Primary, on_rs485_ping);
+        status_line(c, "Result on serial log", color::text_muted());
         place(c, 0, 1);
     }
     {

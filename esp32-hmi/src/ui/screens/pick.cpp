@@ -5,6 +5,7 @@
 #include "ui/theme.h"
 #include "ui/app_state.h"
 #include "storage/state_store.h"
+#include "app/leds.h"
 
 #include <stdio.h>
 
@@ -18,6 +19,7 @@ static void on_start(lv_event_t* e) {
     auto* c = static_cast<StartCtx*>(lv_event_get_user_data(e));
     if (!c) return;
     app::mock_start_pick(c->idx);
+    leds::light_target_slots();      // fire and forget; ok if Core absent
     ui::navigate(Screen::PickActive);
 }
 static void free_start_ctx(lv_event_t* e) {
@@ -68,6 +70,30 @@ static void on_picked(lv_event_t* e) {
 }
 static void free_picked_ctx(lv_event_t* e) {
     delete static_cast<PickedCtx*>(lv_event_get_user_data(e));
+}
+
+// Cancel the active job: revert any still-TARGET slots to OCCUPIED
+// (the reels never moved), drop active_pick_idx, persist, clear all
+// reel LEDs, and navigate back to the pick-list screen.
+static void cancel_active_job(lv_event_t*) {
+    auto& st = app::state();
+    if (st.active_pick_idx < 0) {
+        ui::navigate(Screen::PickList);
+        return;
+    }
+    app::lock();
+    for (int i = 0; i < app::N_SLOTS; ++i) {
+        if (st.rack[i].state == app::SlotState::TARGET) {
+            st.rack[i].state = app::SlotState::OCCUPIED;
+        }
+        // PICKED stays as PICKED (real physical removal during the job).
+    }
+    st.active_pick_idx = -1;
+    app::unlock();
+    state_store::mark_jobs_dirty();
+    state_store::mark_all_slots_dirty();
+    leds::clear_all();
+    ui::navigate(Screen::PickList);
 }
 
 void build_pick_active(lv_obj_t* body) {
@@ -156,6 +182,27 @@ void build_pick_active(lv_obj_t* body) {
                                       /*disabled=*/it.picked);
         lv_obj_add_event_cb(b, free_picked_ctx, LV_EVENT_DELETE, ctx);
     }
+
+    // Bottom action bar -- single "Cancel job" for now. When all
+    // items are picked and the user navigates away, the job remains
+    // "active" in state until they explicitly cancel; future work
+    // can auto-complete on full pick.
+    lv_obj_t* actions = lv_obj_create(body);
+    lv_obj_remove_style_all(actions);
+    lv_obj_set_size(actions, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_all(actions, 8, 0);
+    lv_obj_set_style_pad_gap(actions, 8, 0);
+    lv_obj_set_style_bg_color(actions, color::surface(), 0);
+    lv_obj_set_style_bg_opa(actions, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_side(actions, LV_BORDER_SIDE_TOP, 0);
+    lv_obj_set_style_border_color(actions, color::border(), 0);
+    lv_obj_set_style_border_width(actions, 1, 0);
+    lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_END,
+                                    LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(actions, LV_OBJ_FLAG_SCROLLABLE);
+
+    button(actions, "Cancel job", BtnKind::Danger, cancel_active_job);
 }
 
 } // namespace ui::screens
