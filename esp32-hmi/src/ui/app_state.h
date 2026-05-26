@@ -116,8 +116,34 @@ struct State {
     char    fw_version[12];
 };
 
-// Singleton accessor. Initialized with mock data on first call.
+// Singleton accessor. On first call: creates the state mutex and
+// seeds the in-memory store with mock data so the UI has something
+// to render even before state_store::load() runs.
 State& state();
+
+// Coarse mutex protecting the State struct against torn reads/writes
+// across tasks.
+//
+// Who needs to take it:
+//   - Mutators on any task (today: UI handlers on the LVGL task and
+//     the RS485 event dispatcher, which lv_async_call's onto the
+//     LVGL task too).
+//   - The state_store writer task, briefly, while memcpy'ing a
+//     snapshot.
+// Who does NOT need to take it:
+//   - UI builders / readers on the LVGL task. They're single-writer
+//     by convention (all mutations route through the LVGL task), so
+//     they can't race with themselves. They only need protection
+//     against the writer-task snapshot, which is what the mutator
+//     side of the lock provides.
+void lock();
+void unlock();
+
+// True if state_store::load() actually populated app_state from SD
+// at boot; false if we fell back to the mock seed (e.g. no card,
+// fresh card, parse error).
+bool boot_loaded_from_sd();
+void set_boot_loaded_from_sd(bool v);
 
 // Helpers
 int  slots_occupied();

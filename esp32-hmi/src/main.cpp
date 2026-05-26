@@ -31,6 +31,7 @@
 #include "touch/gt911.h"
 #include "storage/sdcard.h"
 #include "storage/config_store.h"
+#include "storage/state_store.h"
 #include "net/wifi_mgr.h"
 #include "rs485/rs485.h"
 #include "sensors/qr_scanner.h"
@@ -152,6 +153,17 @@ void setup() {
     config_store::init();
     (void)app::state();           // seed mock data
     config_store::apply_to_app_state();
+
+    // 6b) Runtime-state store: load persisted rack + pick queue from
+    //     SD over the mock seed. Returns false if SD missing or files
+    //     don't exist yet (first boot) -- the mock seed stays. The
+    //     writer task takes over from here for any saves triggered
+    //     by mutations.
+    bool state_loaded = state_store::load();
+    app::set_boot_loaded_from_sd(state_loaded);
+    if (!state_store::start_writer()) {
+        Serial.println("[boot] state_store writer task failed to start");
+    }
 
     // 7) UI
     theme::init();

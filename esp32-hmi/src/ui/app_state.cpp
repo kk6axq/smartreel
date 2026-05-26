@@ -1,13 +1,27 @@
 #include "ui/app_state.h"
 
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
+// Forward-declare state_store's dirty-marking API so we can call it
+// without including state_store.h here (which would create a cycle:
+// state_store.h includes app_state.h).
+namespace state_store {
+    void mark_slot_dirty(int slot_num);
+    void mark_all_slots_dirty();
+    void mark_jobs_dirty();
+    void log_anomaly(const app::Anomaly& a);
+}
+
 namespace app {
 
-static State g_state;
-static bool  g_inited = false;
+static State              g_state;
+static bool               g_inited        = false;
+static SemaphoreHandle_t  g_mutex         = nullptr;
+static bool               g_loaded_from_sd = false;
 
 // ---- Parts catalog (mirrors DUMMY_PARTS in the HTML) --------------
 struct PartTemplate {
@@ -139,9 +153,21 @@ static void seed(State& st) {
 }
 
 State& state() {
-    if (!g_inited) { seed(g_state); g_inited = true; }
+    if (!g_inited) {
+        // First call comes from main.cpp setup before any tasks
+        // exist, so this is safe without external synchronisation.
+        g_mutex = xSemaphoreCreateMutex();
+        seed(g_state);
+        g_inited = true;
+    }
     return g_state;
 }
+
+void lock()   { if (g_mutex) xSemaphoreTake(g_mutex, portMAX_DELAY); }
+void unlock() { if (g_mutex) xSemaphoreGive(g_mutex); }
+
+bool boot_loaded_from_sd()           { return g_loaded_from_sd; }
+void set_boot_loaded_from_sd(bool v) { g_loaded_from_sd = v; }
 
 // ---- Helpers ------------------------------------------------------
 int slots_occupied() {
@@ -204,19 +230,28 @@ int pick_job_done_count(const PickJob& j) {
 }
 
 // ---- Mock-data triggers (the prototype build wires UI buttons here) ---
+//
+// These now also push dirty-bits at state_store so persistent changes
+// land on the SD card. The forward-declaration of the state_store
+// dirty API at the top of this file avoids a circular include.
 void mock_simulate_load_scan() {
     State& st = state();
+    lock();
     copy_part(st.load_part, kCatalog[rng() % kCatalogN]);
     st.load_step = LoadStep::Placed;
     for (auto& s : st.rack) {
         if (s.state == SlotState::EMPTY) s.state = SlotState::TARGET;
     }
+    unlock();
+    // TARGET/LIT collapse to EMPTY on disk so this is workflow-only;
+    // no dirty mark.
 }
 
 void mock_place_reel(int slot_num) {
     State& st = state();
     Slot* chosen = slot_by_num(slot_num);
     if (!chosen) return;
+    lock();
     // Clear other lit
     for (auto& s : st.rack) {
         if (s.state == SlotState::TARGET && s.slot != slot_num)
@@ -227,28 +262,36 @@ void mock_place_reel(int slot_num) {
     chosen->qty   = 100 + (int)(rng() % 900);
     st.load_step = LoadStep::Scan;
     st.load_part.valid = false;
+    unlock();
+    state_store::mark_slot_dirty(slot_num);
 }
 
 void mock_cancel_load() {
     State& st = state();
+    lock();
     for (auto& s : st.rack) {
         if (s.state == SlotState::TARGET) s.state = SlotState::EMPTY;
     }
     st.load_step = LoadStep::Scan;
     st.load_part.valid = false;
+    unlock();
 }
 
 void mock_manual_pick(int slot_num) {
     Slot* s = slot_by_num(slot_num);
     if (!s) return;
+    lock();
     s->state = SlotState::EMPTY;
     s->part.valid = false;
     s->qty = 0;
+    unlock();
+    state_store::mark_slot_dirty(slot_num);
 }
 
 void mock_start_pick(int idx) {
     State& st = state();
     if (idx < 0 || idx >= st.n_pick_jobs) return;
+    lock();
     st.active_pick_idx = idx;
     PickJob& j = st.pick_jobs[idx];
     resolve_pick_locations(j);
@@ -256,6 +299,8 @@ void mock_start_pick(int idx) {
         Slot* s = slot_by_num(j.items[i].slot_num);
         if (s) s->state = SlotState::TARGET;
     }
+    unlock();
+    state_store::mark_jobs_dirty();
 }
 
 // ---- Anomaly mock --------------------------------------------------
@@ -276,6 +321,7 @@ static void anomaly_kv(Anomaly& a, const char* k, const char* v) {
 
 void mock_raise_anomaly(AnomalyKind k) {
     State& st = state();
+    lock();
     Anomaly& a = st.anomaly;
 
     char buf[64];
@@ -322,15 +368,21 @@ void mock_raise_anomaly(AnomalyKind k) {
             anomaly_kv(a, "Action",   "Replace divider, or enter Maintenance");
             break;
         }
-        default: return;
+        default:
+            unlock();
+            return;
     }
     st.anomaly_visible = true;
+    unlock();
+    state_store::log_anomaly(a);
 }
 
 void mock_resolve_anomaly() {
     State& st = state();
+    lock();
     st.anomaly.kind = AnomalyKind::None;
     st.anomaly_visible = false;
+    unlock();
 }
 
 } // namespace app

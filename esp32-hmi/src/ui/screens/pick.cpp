@@ -4,6 +4,7 @@
 #include "ui/widgets.h"
 #include "ui/theme.h"
 #include "ui/app_state.h"
+#include "storage/state_store.h"
 
 #include <stdio.h>
 
@@ -59,7 +60,10 @@ static void on_picked(lv_event_t* e) {
     if (st.active_pick_idx < 0) return;
     auto& j = st.pick_jobs[st.active_pick_idx];
     if (c->item_idx < 0 || c->item_idx >= j.n_items) return;
+    app::lock();
     j.items[c->item_idx].picked = true;
+    app::unlock();
+    state_store::mark_jobs_dirty();
     ui::rebuild_current();
 }
 static void free_picked_ctx(lv_event_t* e) {
