@@ -18,13 +18,19 @@
 // =====================================================================
 
 #include <Arduino.h>
+#include <Updater.h>
+#include <LittleFS.h>
 #include <string.h>
 #include <stdlib.h>
 
 #include "rs485/rs485_proto.h"
 #include "rs485/rs485_frame.h"
+#include "sha256.h"
 
 using namespace rs485;
+
+// Bump this to make an OTA target visually distinct from what's running.
+#define CORE_BUILD_TAG "dev"
 
 // ---- Pin map (see platformio.ini header) ---------------------------
 static constexpr uint8_t PIN_RS485_TX = 16;   // -> SP3485 DI
@@ -231,6 +237,109 @@ static void handle_read_inputs(uint8_t seq, const uint8_t* p, size_t len) {
     rs485_send(mk_response(MSG_READ_INPUTS), seq, v, sizeof(v));
 }
 
+// =====================================================================
+//  Firmware update receiver (FW_* messages, arduino-pico OTA staging)
+//
+//  Flow per docs/smartreel-rs485-protocol.md:
+//    FW_BEGIN  -> Update.begin() (opens LittleFS staging), reply OK/READY
+//    FW_CHUNK  -> Update.write() the data at the expected offset, hash
+//                 it, reply with the byte count received so far
+//    FW_VERIFY -> compare our SHA-256 to the one announced in FW_BEGIN
+//    FW_COMMIT -> Update.end() (stages PicoOTA), reply OK, then reboot;
+//                 the core's OTA bootloader flashes the image on boot.
+// =====================================================================
+static bool       s_fw_active   = false;
+static uint32_t   s_fw_total    = 0;
+static uint32_t   s_fw_received = 0;
+static sha256_ctx s_fw_sha;
+static uint8_t    s_fw_expected[32];
+
+static uint32_t be32(const uint8_t* p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+}
+static void put_be32(uint8_t* p, uint32_t v) {
+    p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = v;
+}
+
+static void handle_fw_begin(uint8_t seq, const uint8_t* p, size_t len) {
+    // payload: total_size(4) + sha256(32) + version(4)
+    if (len < 40) { send_error(MSG_FW_BEGIN, seq, ERR_BAD_PAYLOAD); return; }
+    s_fw_total = be32(p);
+    memcpy(s_fw_expected, p + 4, 32);
+    uint32_t version = be32(p + 36);
+
+    if (!Update.begin(s_fw_total, U_FLASH)) {
+        Serial.printf("[fw] Update.begin failed (size=%lu)\n", (unsigned long)s_fw_total);
+        send_error(MSG_FW_BEGIN, seq, ERR_BUSY);
+        s_fw_active = false;
+        return;
+    }
+    sha256_init(&s_fw_sha);
+    s_fw_received = 0;
+    s_fw_active   = true;
+    Serial.printf("[fw] BEGIN size=%lu version=0x%08lX -- staging\n",
+                  (unsigned long)s_fw_total, (unsigned long)version);
+    send_ack(MSG_FW_BEGIN, seq);    // ready (LittleFS staging, no slow erase)
+}
+
+static void handle_fw_chunk(uint8_t seq, const uint8_t* p, size_t len) {
+    if (!s_fw_active || len < 4) { send_error(MSG_FW_CHUNK, seq, ERR_FW_STATE); return; }
+    uint32_t offset = be32(p);
+    const uint8_t* data = p + 4;
+    size_t dlen = len - 4;
+
+    if (offset == s_fw_received) {
+        // next expected chunk: write + hash it
+        if (Update.write((uint8_t*)data, dlen) != dlen) {
+            Serial.println("[fw] write failed");
+            send_error(MSG_FW_CHUNK, seq, ERR_BUSY);
+            return;
+        }
+        sha256_update(&s_fw_sha, data, dlen);
+        s_fw_received += dlen;
+    } else if (offset + dlen <= s_fw_received) {
+        // already have it (a retransmit) -- just re-ACK
+    } else {
+        // gap: master must resend from where we are
+        send_error(MSG_FW_CHUNK, seq, ERR_FW_OOR);
+        return;
+    }
+    // ACK with bytes-received-so-far so the master advances
+    uint8_t ack[4]; put_be32(ack, s_fw_received);
+    rs485_send(mk_response(MSG_FW_CHUNK), seq, ack, sizeof(ack));
+}
+
+static void handle_fw_verify(uint8_t seq) {
+    if (!s_fw_active) { send_error(MSG_FW_VERIFY, seq, ERR_FW_STATE); return; }
+    uint8_t got[32];
+    sha256_ctx tmp = s_fw_sha;          // copy so we don't disturb state
+    sha256_final(&tmp, got);
+    if (s_fw_received != s_fw_total || memcmp(got, s_fw_expected, 32) != 0) {
+        Serial.printf("[fw] VERIFY FAILED (received=%lu/%lu, hash %s)\n",
+                      (unsigned long)s_fw_received, (unsigned long)s_fw_total,
+                      memcmp(got, s_fw_expected, 32) ? "mismatch" : "ok");
+        send_error(MSG_FW_VERIFY, seq, ERR_FW_HASH);
+        return;
+    }
+    Serial.println("[fw] VERIFY ok");
+    send_ack(MSG_FW_VERIFY, seq);
+}
+
+static void handle_fw_commit(uint8_t seq) {
+    if (!s_fw_active) { send_error(MSG_FW_COMMIT, seq, ERR_FW_STATE); return; }
+    if (!Update.end(true)) {
+        Serial.println("[fw] Update.end failed");
+        send_error(MSG_FW_COMMIT, seq, ERR_BUSY);
+        return;
+    }
+    s_fw_active = false;
+    Serial.println("[fw] COMMIT ok -- rebooting into new image");
+    send_ack(MSG_FW_COMMIT, seq);
+    delay(50);            // let the ACK flush onto the bus
+    rp2040.reboot();      // OTA bootloader flashes the staged image
+}
+
 static void on_frame(uint8_t addr, uint8_t seq, uint8_t type,
                      const uint8_t* payload, size_t payload_len,
                      void* /*user*/) {
@@ -261,6 +370,11 @@ static void on_frame(uint8_t addr, uint8_t seq, uint8_t type,
         case MSG_SET_BRIGHTNESS:  send_ack(MSG_SET_BRIGHTNESS, seq);     break;
         case MSG_SET_ANIMATION:   send_ack(MSG_SET_ANIMATION, seq);      break;
         case MSG_COMMIT:          send_ack(MSG_COMMIT, seq);             break;
+        // Firmware update (arduino-pico OTA staging)
+        case MSG_FW_BEGIN:        handle_fw_begin(seq, payload, payload_len);  break;
+        case MSG_FW_CHUNK:        handle_fw_chunk(seq, payload, payload_len);  break;
+        case MSG_FW_VERIFY:       handle_fw_verify(seq);                       break;
+        case MSG_FW_COMMIT:       handle_fw_commit(seq);                       break;
         default:
             Serial.printf("[rs485] unknown cmd 0x%02X\n", type);
             send_error(type, seq, ERR_UNKNOWN_CMD);
@@ -326,6 +440,7 @@ static void process_console_line(char* line) {
     if (!cmd) return;
 
     if (!strcmp(cmd, "help")) { print_help(); return; }
+    if (!strcmp(cmd, "ver"))  { Serial.println("build " CORE_BUILD_TAG " " __DATE__ " " __TIME__); return; }
     if (!strcmp(cmd, "status")) { print_status(); return; }
     if (!strcmp(cmd, "blast")) {
         // Actively drive the bus (DE high) with a 0x55 stream for <ms>
@@ -466,6 +581,18 @@ void setup() {
     s_boot_ms = millis();
 
     Serial.println("\n[boot] SmartReel Core RS485 test rig");
+    Serial.println("[boot] build " CORE_BUILD_TAG " " __DATE__ " " __TIME__);
+
+    // Mount (and on first boot, format) LittleFS now so the FW_BEGIN
+    // handler's Update.begin() just opens a file -- the one-time format
+    // erase mustn't happen mid-transaction or it blows the master's
+    // FW_BEGIN timeout.
+    if (!LittleFS.begin()) {
+        Serial.println("[boot] LittleFS mount failed -- formatting");
+        LittleFS.format();
+        LittleFS.begin();
+    }
+    Serial.println("[boot] LittleFS ready (OTA staging)");
     Serial.printf("[boot] RS485 UART0 TX=%u RX=%u DE=%u @ %lu baud, addr=0x%02X\n",
                   PIN_RS485_TX, PIN_RS485_RX, PIN_RS485_DE,
                   (unsigned long)RS485_BAUD, ADDR_CORE);

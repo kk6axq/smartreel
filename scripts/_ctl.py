@@ -37,12 +37,18 @@ def main():
         return
     if not dev:
         return  # nothing to poke; caller handles the "already in bootloader" case
-    if action == "touch":          # RP2040 -> BOOTSEL
+    if action == "touch":          # RP2040 -> BOOTSEL (1200-baud DTR toggle)
         try:
-            serial.Serial(dev, 1200)
-            time.sleep(0.2)
+            s = serial.Serial()
+            s.port = dev
+            s.baudrate = 1200
+            s.dtr = False
+            s.open()
+            s.dtr = False; time.sleep(0.1)
+            s.dtr = True;  time.sleep(0.1)
+            s.close()
         except Exception:
-            pass
+            pass   # a reset mid-toggle (Broken pipe) is expected/fine
     elif action == "dl":           # ESP32 app -> ROM download mode
         try:
             s = serial.Serial(dev, 115200, timeout=0.5)

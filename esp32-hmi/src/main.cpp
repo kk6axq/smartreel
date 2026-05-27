@@ -35,6 +35,7 @@
 #include "net/wifi_mgr.h"
 #include "rs485/rs485.h"
 #include "fw/fw_update.h"
+#include "fw/fw_core_update.h"
 #include "sensors/qr_scanner.h"
 #include "util/lvgl_async.h"
 #include "ui/anomaly_modal.h"
@@ -136,7 +137,16 @@ static void handle_console_line(const char* line) {
                 Serial.printf("[fw] FAILED: %s (running app unchanged)\n", fw::result_str(r));
             }
         } else if (!strcmp(target, "core")) {
-            Serial.println("[fw] core (RP2040 over RS485) update not implemented yet");
+            Serial.printf("[fw] pushing /sdcard/%s to RP2040 over RS485 ...\n", file);
+            fw::CoreResult r = fw::update_core_from_sd(file, [](size_t d, size_t t) {
+                static int last = -1;
+                int pct = t ? (int)(100 * d / t) : 0;
+                if (pct != last && pct % 10 == 0) { Serial.printf("[fw]  %d%%\n", pct); last = pct; }
+            });
+            if (r == fw::CoreResult::Ok)
+                Serial.println("[fw] core update committed -- RP2040 rebooting into new image");
+            else
+                Serial.printf("[fw] core update FAILED: %s\n", fw::core_result_str(r));
         } else {
             Serial.println("[fw] usage: fwupdate hmi <file> | fwupdate core <file>");
         }

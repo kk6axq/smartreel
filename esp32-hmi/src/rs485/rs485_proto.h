@@ -74,14 +74,18 @@ static constexpr uint8_t EVT_REEL_REMOVED    = 0x82;
 static constexpr uint8_t EVT_SENSE_THRESHOLD = 0x83;
 static constexpr uint8_t EVT_LOG             = 0x8F;
 
-// Firmware update (0xF_) -- wire definitions; the flow itself is
-// implemented in a separate module to keep the core RS485 layer slim.
-static constexpr uint8_t MSG_FW_BEGIN     = 0xF0;
-static constexpr uint8_t MSG_FW_CHUNK     = 0xF1;
-static constexpr uint8_t MSG_FW_VERIFY    = 0xF2;
-static constexpr uint8_t MSG_FW_COMMIT    = 0xF3;
-static constexpr uint8_t MSG_FW_CONFIRM   = 0xF4;
-static constexpr uint8_t MSG_FW_BOOTED    = 0xF5;   // Core -> ESP32, after a fresh image takes over
+// Firmware update -- these are REQUEST types, so they must live in the
+// 0x00-0x3F request space (bits 6-7 are reserved for the response/error
+// markers). The protocol doc's "category F" numbering (0xF0+) is
+// unusable here: 0xF0 has both the response (0x80) and error (0x40) bits
+// set, so it can neither be sent as a request nor distinguished from an
+// error reply. We use the otherwise-unused 0x3_ ("config") category.
+static constexpr uint8_t MSG_FW_BEGIN     = 0x30;
+static constexpr uint8_t MSG_FW_CHUNK     = 0x31;
+static constexpr uint8_t MSG_FW_VERIFY    = 0x32;
+static constexpr uint8_t MSG_FW_COMMIT    = 0x33;
+static constexpr uint8_t MSG_FW_CONFIRM   = 0x34;
+static constexpr uint8_t MSG_FW_BOOTED    = 0x35;   // Core -> ESP32, after a fresh image takes over
 
 // ---- Error codes (carried as the first payload byte in an error
 // response) ----------------------------------------------------------
