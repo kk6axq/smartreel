@@ -34,6 +34,7 @@
 #include "storage/state_store.h"
 #include "net/wifi_mgr.h"
 #include "rs485/rs485.h"
+#include "fw/fw_update.h"
 #include "sensors/qr_scanner.h"
 #include "util/lvgl_async.h"
 #include "ui/anomaly_modal.h"
@@ -106,12 +107,50 @@ static void handle_console_line(const char* line) {
         Serial.printf("[rs485] ping -> %s\n", rs485::status_str(st));
         return;
     }
+    if (!strcmp(line, "fwinfo")) {
+        Serial.printf("[fw] partition=%s version=%s build=" __DATE__ " " __TIME__ "\n",
+                      fw::running_partition_label(), fw::running_app_version());
+        return;
+    }
+    if (!strncmp(line, "fwupdate", 8)) {
+        char tmp[96];
+        strncpy(tmp, line, sizeof(tmp) - 1); tmp[sizeof(tmp) - 1] = 0;
+        strtok(tmp, " ");                       // "fwupdate"
+        const char* target = strtok(nullptr, " ");
+        const char* file   = strtok(nullptr, " ");
+        if (!target || !file) {
+            Serial.println("[fw] usage: fwupdate hmi <file> | fwupdate core <file>");
+            return;
+        }
+        if (!strcmp(target, "hmi")) {
+            Serial.printf("[fw] updating HMI from /sdcard/%s ...\n", file);
+            fw::Result r = fw::update_hmi_from_sd(file, [](size_t d, size_t t) {
+                static int last = -1;
+                int pct = t ? (int)(100 * d / t) : 0;
+                if (pct != last && pct % 10 == 0) { Serial.printf("[fw]  %d%%\n", pct); last = pct; }
+            });
+            if (r == fw::Result::Ok) {
+                Serial.println("[fw] staged ok -- rebooting into new image");
+                Serial.flush(); delay(100); esp_restart();
+            } else {
+                Serial.printf("[fw] FAILED: %s (running app unchanged)\n", fw::result_str(r));
+            }
+        } else if (!strcmp(target, "core")) {
+            Serial.println("[fw] core (RP2040 over RS485) update not implemented yet");
+        } else {
+            Serial.println("[fw] usage: fwupdate hmi <file> | fwupdate core <file>");
+        }
+        return;
+    }
     if (!strcmp(line, "help") || !strcmp(line, "?")) {
         Serial.println("[console] commands:");
         Serial.println("  dl | bootloader | download   reboot into UART download mode");
         Serial.println("  reboot | reset               normal reboot");
         Serial.println("  stats                        RS485 frame counters");
         Serial.println("  ping                         one-shot RS485 ping to Core");
+        Serial.println("  fwinfo                       running partition + app version");
+        Serial.println("  fwupdate hmi <file>          self-OTA from /sdcard/<file>");
+        Serial.println("  fwupdate core <file>         push <file> to RP2040 over RS485");
         Serial.println("  help | ?                     this list");
         return;
     }
@@ -319,6 +358,8 @@ void setup() {
     Serial.begin(115200);
     delay(50);
     Serial.println("\n[boot] reel-rack HMI starting");
+    Serial.printf("[boot] build " __DATE__ " " __TIME__ ", partition=%s\n",
+                  fw::running_partition_label());
     Serial.println("[boot] serial console: type 'help' for commands ('dl' = enter UART download mode)");
 
     // 1) I2C bus
