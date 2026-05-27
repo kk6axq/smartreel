@@ -1,0 +1,1 @@
+../../esp32-hmi/src/fw/fw_tag.h

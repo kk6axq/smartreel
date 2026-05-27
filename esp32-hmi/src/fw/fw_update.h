@@ -42,6 +42,19 @@ Result update_hmi_from_sd(const char* filename, ProgressCb cb = nullptr);
 // Label of the currently-running OTA partition (e.g. "app0"/"app1").
 const char* running_partition_label();
 
+// ---- Semantic firmware version (from the embedded FwTag) -----------
+// Running HMI version, e.g. "1.0.0".
+const char* version_str();
+// Running HMI build date+time (from the tag).
+const char* build_str();
+
+// Read the version of a firmware image sitting on the SD card by
+// scanning it for the embedded FwTag. `expect_project` ("hmi"/"core")
+// is checked if non-null. Formats "1.0.0" into `out`. Returns false if
+// the file is missing or carries no recognisable tag.
+bool file_version(const char* filename, const char* expect_project,
+                  char* out, size_t cap);
+
 // Project/app version string baked into the running image (from the
 // app descriptor). Useful to confirm an update actually took.
 const char* running_app_version();

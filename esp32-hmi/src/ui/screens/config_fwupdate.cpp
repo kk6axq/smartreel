@@ -168,13 +168,25 @@ static void value_row(lv_obj_t* fc, const char* label, const char* desc,
     lv_obj_set_style_text_color(l, col, 0);
 }
 
-static void sd_row(lv_obj_t* fc, const char* fname) {
+// Show the update image on the SD: its embedded version + size, or
+// "not present" / "no version tag".
+static void sd_row(lv_obj_t* fc, const char* fname, const char* project) {
     size_t sz = sd_size(fname);
     char label[40]; snprintf(label, sizeof(label), "On SD (%s)", fname);
-    char val[32];
-    if (sz) snprintf(val, sizeof(val), "%u KB", (unsigned)((sz + 1023) / 1024));
-    else    snprintf(val, sizeof(val), "not present");
-    value_row(fc, label, nullptr, val, sz ? color::slot_picked() : color::text_muted());
+    char val[48];
+    lv_color_t col;
+    if (!sz) {
+        snprintf(val, sizeof(val), "not present");
+        col = color::text_muted();
+    } else {
+        char ver[16];
+        if (fw::file_version(fname, project, ver, sizeof(ver)))
+            snprintf(val, sizeof(val), "v%s  (%u KB)", ver, (unsigned)((sz + 1023) / 1024));
+        else
+            snprintf(val, sizeof(val), "no version tag  (%u KB)", (unsigned)((sz + 1023) / 1024));
+        col = color::slot_picked();
+    }
+    value_row(fc, label, nullptr, val, col);
 }
 
 static lv_obj_t* action_row(lv_obj_t* fc) {
@@ -195,12 +207,11 @@ void build_config_fwupdate(lv_obj_t* body) {
     {
         lv_obj_t* fc = form_card(sc, "HMI FIRMWARE (ESP32)");
 
-        char part[40];
-        snprintf(part, sizeof(part), "%s", fw::running_partition_label());
-        value_row(fc, "Running", "Active OTA slot",
-                  fw::running_app_version(), color::text());
-        value_row(fc, "Partition", nullptr, part, color::text_muted());
-        sd_row(fc, "hmi.bin");
+        char run[40];
+        snprintf(run, sizeof(run), "v%s", fw::version_str());
+        value_row(fc, "Running", fw::build_str(), run, color::text());
+        value_row(fc, "Partition", nullptr, fw::running_partition_label(), color::text_muted());
+        sd_row(fc, "hmi.bin", "hmi");
 
         lv_obj_t* ar = action_row(fc);
         button(ar, "Update HMI", BtnKind::Primary, on_update_hmi);
@@ -214,16 +225,14 @@ void build_config_fwupdate(lv_obj_t* body) {
         char ver[48];
         lv_color_t ver_col;
         if (rs485::get_version(cv) == rs485::Status::Ok) {
-            snprintf(ver, sizeof(ver), "v%u.%u.%u  (build %08lX)",
-                     cv.fw_major, cv.fw_minor, cv.fw_patch,
-                     (unsigned long)cv.build_id);
+            snprintf(ver, sizeof(ver), "v%u.%u.%u", cv.fw_major, cv.fw_minor, cv.fw_patch);
             ver_col = color::text();
         } else {
             snprintf(ver, sizeof(ver), "offline / no response");
             ver_col = color::slot_warn();
         }
         value_row(fc, "Running", "Queried over RS485", ver, ver_col);
-        sd_row(fc, "core.bin");
+        sd_row(fc, "core.bin", "core");
 
         lv_obj_t* ar = action_row(fc);
         button(ar, "Update Core", BtnKind::Primary, on_update_core);

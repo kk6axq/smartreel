@@ -109,7 +109,8 @@ static void handle_console_line(const char* line) {
         return;
     }
     if (!strcmp(line, "fwinfo")) {
-        Serial.printf("[fw] partition=%s version=%s build=" __DATE__ " " __TIME__ "\n",
+        Serial.printf("[fw] HMI v%s  built %s  partition=%s  (git %s)\n",
+                      fw::version_str(), fw::build_str(),
                       fw::running_partition_label(), fw::running_app_version());
         return;
     }

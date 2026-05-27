@@ -1,4 +1,5 @@
 #include "fw/fw_update.h"
+#include "fw/fw_tag.h"
 #include "storage/sdcard.h"
 
 #include <Arduino.h>
@@ -10,6 +11,57 @@
 #include <string.h>
 
 namespace fw {
+
+// Embedded version tag for this (HMI) image. Scanned out of hmi.bin by
+// the same code that reads core.bin, and read directly below for our
+// own running version.
+FW_TAG_DEFINE("hmi");
+
+const char* version_str() {
+    static char s[16];
+    snprintf(s, sizeof(s), "%u.%u.%u", g_fw_tag.major, g_fw_tag.minor, g_fw_tag.patch);
+    return s;
+}
+
+const char* build_str() {
+    static char s[sizeof(g_fw_tag.build) + 1];
+    memcpy(s, g_fw_tag.build, sizeof(g_fw_tag.build));
+    s[sizeof(g_fw_tag.build)] = 0;
+    return s;
+}
+
+bool file_version(const char* filename, const char* expect_project,
+                  char* out, size_t cap) {
+    if (!sdcard::mounted()) return false;
+    char path[160];
+    snprintf(path, sizeof(path), "%s/%s", sdcard::mount_point(), filename);
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+
+    // Chunked scan with overlap so a tag straddling a boundary is found.
+    const size_t TAG = sizeof(FwTag);
+    static uint8_t buf[8192 + sizeof(FwTag)];
+    size_t carry = 0;
+    bool found = false;
+    FwTag tag;
+    for (;;) {
+        size_t got = fread(buf + carry, 1, 8192, f);
+        if (got == 0) break;
+        size_t avail = carry + got;
+        const FwTag* t = fw_tag_find(buf, avail);
+        if (t) { memcpy(&tag, t, sizeof(tag)); found = true; break; }
+        carry = (avail >= TAG - 1) ? TAG - 1 : avail;
+        memmove(buf, buf + avail - carry, carry);
+    }
+    fclose(f);
+    if (!found) return false;
+    if (expect_project &&
+        strncmp(tag.project, expect_project, sizeof(tag.project)) != 0) {
+        return false;   // tag belongs to the wrong image
+    }
+    snprintf(out, cap, "%u.%u.%u", tag.major, tag.minor, tag.patch);
+    return true;
+}
 
 const char* result_str(Result r) {
     switch (r) {

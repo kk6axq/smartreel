@@ -26,8 +26,13 @@
 #include "rs485/rs485_proto.h"
 #include "rs485/rs485_frame.h"
 #include "sha256.h"
+#include "fw_tag.h"
 
 using namespace rs485;
+
+// Semantic version comes from -DFW_VER_* (platformio.ini). The embedded
+// tag lets the HMI read this version out of core.bin on the SD card.
+FW_TAG_DEFINE("core");
 
 // Bump this to make an OTA target visually distinct from what's running.
 #define CORE_BUILD_TAG "dev"
@@ -185,8 +190,10 @@ static void handle_ack_events(uint8_t seq, const uint8_t* p, size_t len) {
 }
 
 static void handle_get_version(uint8_t seq) {
-    // major, minor, patch, build_id(4 BE), hw_rev
-    const uint8_t v[8] = { 0, 1, 0, 0xCA, 0xFE, 0xBA, 0xBE, 0x01 };
+    // major, minor, patch, build_id(4 BE), hw_rev -- version from the
+    // embedded tag so it matches what the HMI parses out of core.bin.
+    const uint8_t v[8] = { g_fw_tag.major, g_fw_tag.minor, g_fw_tag.patch,
+                           0, 0, 0, 0, 0x01 };
     rs485_send(mk_response(MSG_GET_VERSION), seq, v, sizeof(v));
 }
 
@@ -440,7 +447,12 @@ static void process_console_line(char* line) {
     if (!cmd) return;
 
     if (!strcmp(cmd, "help")) { print_help(); return; }
-    if (!strcmp(cmd, "ver"))  { Serial.println("build " CORE_BUILD_TAG " " __DATE__ " " __TIME__); return; }
+    if (!strcmp(cmd, "ver")) {
+        Serial.printf("v%u.%u.%u  built %s  (%s)\n",
+                      g_fw_tag.major, g_fw_tag.minor, g_fw_tag.patch,
+                      g_fw_tag.build, CORE_BUILD_TAG);
+        return;
+    }
     if (!strcmp(cmd, "status")) { print_status(); return; }
     if (!strcmp(cmd, "blast")) {
         // Actively drive the bus (DE high) with a 0x55 stream for <ms>
@@ -581,7 +593,9 @@ void setup() {
     s_boot_ms = millis();
 
     Serial.println("\n[boot] SmartReel Core RS485 test rig");
-    Serial.println("[boot] build " CORE_BUILD_TAG " " __DATE__ " " __TIME__);
+    Serial.printf("[boot] v%u.%u.%u built %s (%s)\n",
+                  g_fw_tag.major, g_fw_tag.minor, g_fw_tag.patch,
+                  g_fw_tag.build, CORE_BUILD_TAG);
 
     // Mount (and on first boot, format) LittleFS now so the FW_BEGIN
     // handler's Update.begin() just opens a file -- the one-time format
