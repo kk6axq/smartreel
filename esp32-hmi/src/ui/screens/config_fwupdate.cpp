@@ -158,35 +158,80 @@ static void on_update_core(lv_event_t*) {
 }
 
 // ---- Small helpers for value rows ----------------------------------
-static void value_row(lv_obj_t* fc, const char* label, const char* desc,
-                      const char* value, lv_color_t col) {
+static lv_obj_t* value_row(lv_obj_t* fc, const char* label, const char* desc,
+                           const char* value, lv_color_t col) {
     lv_obj_t* r = form_row(fc);
     form_row_label(r, label, desc);
     lv_obj_t* l = lv_label_create(r);
     lv_label_set_text(l, value);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_color(l, col, 0);
+    return l;
 }
 
-// Show the update image on the SD: its embedded version + size, or
-// "not present" / "no version tag".
-static void sd_row(lv_obj_t* fc, const char* fname, const char* project) {
-    size_t sz = sd_size(fname);
-    char label[40]; snprintf(label, sizeof(label), "On SD (%s)", fname);
-    char val[48];
-    lv_color_t col;
-    if (!sz) {
-        snprintf(val, sizeof(val), "not present");
-        col = color::text_muted();
-    } else {
-        char ver[16];
-        if (fw::file_version(fname, project, ver, sizeof(ver)))
-            snprintf(val, sizeof(val), "v%s  (%u KB)", ver, (unsigned)((sz + 1023) / 1024));
-        else
-            snprintf(val, sizeof(val), "no version tag  (%u KB)", (unsigned)((sz + 1023) / 1024));
-        col = color::slot_picked();
+// ---- Deferred SD-image version scan --------------------------------
+// Reading the embedded tag means scanning 100s of KB off the SD card.
+// Doing that during build_config_fwupdate() would block the LVGL thread.
+// Instead we show the size immediately + "checking..." and let a worker
+// scan the files, then fill the labels via dispatch_on_lvgl. A
+// generation counter (bumped each build) + a current-screen check make
+// stale completions safe to drop.
+static lv_obj_t* s_sd_lbl[2];
+static char      s_sd_fname[2][16];
+static char      s_sd_proj[2][8];
+static unsigned  s_sd_kb[2];
+static int       s_sd_n;
+static uint32_t  s_sd_gen;
+
+struct ScanJob {
+    uint32_t gen;
+    int      n;
+    char     fname[2][16];
+    char     proj[2][8];
+    unsigned kb[2];
+    char     result[2][48];
+};
+
+static void apply_sd_versions(void* arg) {
+    ScanJob* j = (ScanJob*)arg;
+    if (j->gen == s_sd_gen && ui::current() == ui::Screen::ConfigFwupdate) {
+        for (int i = 0; i < j->n && i < s_sd_n; ++i)
+            if (s_sd_lbl[i]) lv_label_set_text(s_sd_lbl[i], j->result[i]);
     }
-    value_row(fc, label, nullptr, val, col);
+    free(j);
+}
+
+static void sd_scan_worker(void* arg) {
+    ScanJob* j = (ScanJob*)arg;
+    for (int i = 0; i < j->n; ++i) {
+        char ver[16];
+        if (fw::file_version(j->fname[i], j->proj[i], ver, sizeof(ver)))
+            snprintf(j->result[i], sizeof(j->result[i]), "v%s  (%u KB)", ver, j->kb[i]);
+        else
+            snprintf(j->result[i], sizeof(j->result[i]), "no version tag  (%u KB)", j->kb[i]);
+    }
+    ui::dispatch_on_lvgl(apply_sd_versions, j);
+    vTaskDelete(nullptr);
+}
+
+// Show the update image on the SD: size now, version filled in async.
+static void sd_row(lv_obj_t* fc, const char* fname, const char* project) {
+    size_t sz = sd_size(fname);   // quick: open + seek-to-end, no content read
+    char label[40]; snprintf(label, sizeof(label), "On SD (%s)", fname);
+    if (!sz) {
+        value_row(fc, label, nullptr, "not present", color::text_muted());
+        return;
+    }
+    unsigned kb = (unsigned)((sz + 1023) / 1024);
+    char val[48]; snprintf(val, sizeof(val), "checking...  (%u KB)", kb);
+    lv_obj_t* l = value_row(fc, label, nullptr, val, color::slot_picked());
+    if (s_sd_n < 2) {
+        s_sd_lbl[s_sd_n] = l;
+        snprintf(s_sd_fname[s_sd_n], sizeof(s_sd_fname[0]), "%s", fname);
+        snprintf(s_sd_proj[s_sd_n],  sizeof(s_sd_proj[0]),  "%s", project);
+        s_sd_kb[s_sd_n] = kb;
+        s_sd_n++;
+    }
 }
 
 static lv_obj_t* action_row(lv_obj_t* fc) {
@@ -201,6 +246,10 @@ static lv_obj_t* action_row(lv_obj_t* fc) {
 }
 
 void build_config_fwupdate(lv_obj_t* body) {
+    // New generation -- invalidates any in-flight scan from a prior build.
+    s_sd_gen++;
+    s_sd_n = 0;
+
     lv_obj_t* sc = form_scroller(body);
 
     // ---- HMI firmware -------------------------------------------
@@ -221,21 +270,39 @@ void build_config_fwupdate(lv_obj_t* body) {
     {
         lv_obj_t* fc = form_card(sc, "CORE FIRMWARE (RP2040)");
 
+        // Read the version the POLL task already cached -- no blocking
+        // RS485 transaction on the LVGL thread (that would stall/glitch
+        // the screen build).
         rs485::CoreVersion cv;
         char ver[48];
         lv_color_t ver_col;
-        if (rs485::get_version(cv) == rs485::Status::Ok) {
+        if (rs485::cached_version(cv)) {
             snprintf(ver, sizeof(ver), "v%u.%u.%u", cv.fw_major, cv.fw_minor, cv.fw_patch);
             ver_col = color::text();
         } else {
-            snprintf(ver, sizeof(ver), "offline / no response");
-            ver_col = color::slot_warn();
+            snprintf(ver, sizeof(ver), "querying...");
+            ver_col = color::text_muted();
         }
         value_row(fc, "Running", "Queried over RS485", ver, ver_col);
         sd_row(fc, "core.bin", "core");
 
         lv_obj_t* ar = action_row(fc);
         button(ar, "Update Core", BtnKind::Primary, on_update_core);
+    }
+
+    // Kick off the (off-thread) SD version scan for any present images.
+    if (s_sd_n > 0) {
+        ScanJob* j = (ScanJob*)calloc(1, sizeof(ScanJob));
+        if (j) {
+            j->gen = s_sd_gen;
+            j->n   = s_sd_n;
+            for (int i = 0; i < s_sd_n; ++i) {
+                memcpy(j->fname[i], s_sd_fname[i], sizeof(j->fname[0]));
+                memcpy(j->proj[i],  s_sd_proj[i],  sizeof(j->proj[0]));
+                j->kb[i] = s_sd_kb[i];
+            }
+            xTaskCreate(sd_scan_worker, "sd-ver", 4096, j, 1, nullptr);
+        }
     }
 }
 

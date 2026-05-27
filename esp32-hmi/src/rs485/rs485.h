@@ -69,6 +69,11 @@ struct CoreVersion {
 };
 Status get_version(CoreVersion& out, uint8_t addr = ADDR_CORE);
 
+// Last Core version cached by the background POLL task (refreshed every
+// few seconds). Lets the UI show the Core version without a blocking
+// transaction on the LVGL thread. Returns false until the first read.
+bool cached_version(CoreVersion& out);
+
 struct CoreStatus {
     uint32_t uptime_s;
     uint8_t  reels_present;  // bitmap; bit N = reel N (0..3)

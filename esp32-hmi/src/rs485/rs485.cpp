@@ -292,11 +292,22 @@ static void dispatch_events_from_poll(const uint8_t* p, size_t len) {
     }
 }
 
+// Background-cached Core version, refreshed by the POLL task so the UI
+// never has to do a blocking GET_VERSION on the LVGL thread.
+static CoreVersion s_cached_ver       = {};
+static bool        s_cached_ver_valid = false;
+
+bool cached_version(CoreVersion& out) {
+    if (s_cached_ver_valid) out = s_cached_ver;
+    return s_cached_ver_valid;
+}
+
 static void poll_task(void* /*arg*/) {
     constexpr TickType_t period = pdMS_TO_TICKS(POLL_PERIOD_MS);
     TickType_t last = xTaskGetTickCount();
     uint8_t  buf[MAX_PAYLOAD];
     size_t   plen = 0;
+    uint32_t tick = 0;
 
     for (;;) {
         if (!s_poll_paused) {
@@ -307,6 +318,16 @@ static void poll_task(void* /*arg*/) {
             if (s == Status::Ok && plen > 0) {
                 dispatch_events_from_poll(buf, plen);
             }
+            // Refresh the cached Core version on the first poll and then
+            // every ~5 s. Runs off the UI thread.
+            if (tick % 250 == 0) {
+                CoreVersion cv;
+                if (get_version(cv) == Status::Ok) {
+                    s_cached_ver = cv;
+                    s_cached_ver_valid = true;
+                }
+            }
+            tick++;
         }
         vTaskDelayUntil(&last, period);
     }
