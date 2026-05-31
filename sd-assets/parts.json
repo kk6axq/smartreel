@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "parts": [
+    {
+      "qr": "MOCK-PART-00001",
+      "id": "R-10K-0805",
+      "name": "RES 10kohm 1% 0805",
+      "pkg": "0805",
+      "mfg": "Yageo"
+    },
+    {
+      "qr": "MOCK-PART-00002",
+      "id": "C-100N-0603",
+      "name": "CAP 100nF X7R 0603",
+      "pkg": "0603",
+      "mfg": "Murata"
+    },
+    {
+      "qr": "MOCK-PART-00003",
+      "id": "IC-LM358",
+      "name": "OPA LM358 SOIC-8",
+      "pkg": "SOIC8",
+      "mfg": "TI"
+    },
+    {
+      "qr": "MOCK-PART-00004",
+      "id": "D-LED-G-0603",
+      "name": "LED green 0603",
+      "pkg": "0603",
+      "mfg": "Lite-On"
+    },
+    {
+      "qr": "MOCK-PART-00005",
+      "id": "IC-ESP32S3",
+      "name": "MCU ESP32-S3-WROOM",
+      "pkg": "Module",
+      "mfg": "Espressif"
+    },
+    {
+      "qr": "MOCK-PART-00006",
+      "id": "Q-2N7002",
+      "name": "MOS 2N7002 SOT-23",
+      "pkg": "SOT23",
+      "mfg": "ON Semi"
+    },
+    {
+      "qr": "MOCK-PART-00007",
+      "id": "C-10U-0805",
+      "name": "CAP 10uF X5R 0805",
+      "pkg": "0805",
+      "mfg": "Samsung"
+    },
+    {
+      "qr": "MOCK-PART-00008",
+      "id": "CONN-USBC",
+      "name": "CONN USB-C receptacle",
+      "pkg": "SMD",
+      "mfg": "Molex"
+    }
+  ]
+}

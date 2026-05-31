@@ -1,4 +1,5 @@
 #include "ui/app_state.h"
+#include "storage/parts_catalog.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -234,17 +235,51 @@ int pick_job_done_count(const PickJob& j) {
 // These now also push dirty-bits at state_store so persistent changes
 // land on the SD card. The forward-declaration of the state_store
 // dirty API at the top of this file avoids a circular include.
-void mock_simulate_load_scan() {
+// ---- Load workflow (real QR scan + mock placement) ----------------
+bool load_apply_scan(const char* qr) {
+    State& st = state();
+    if (st.load_scan_locked) return false;     // already locked; ignore
+    Part p;
+    if (!parts_catalog::lookup(qr, p)) return false;
+    lock();
+    st.load_part        = p;
+    st.load_scan_locked = true;
+    unlock();
+    return true;
+}
+
+void load_rescan() {
     State& st = state();
     lock();
-    copy_part(st.load_part, kCatalog[rng() % kCatalogN]);
-    st.load_step = LoadStep::Placed;
+    st.load_scan_locked = false;
+    st.load_part.valid  = false;
+    unlock();
+}
+
+void load_begin_placement() {
+    State& st = state();
+    if (!st.load_scan_locked) return;
+    lock();
     for (auto& s : st.rack) {
         if (s.state == SlotState::EMPTY) s.state = SlotState::TARGET;
     }
+    st.load_step = LoadStep::Placed;
     unlock();
-    // TARGET/LIT collapse to EMPTY on disk so this is workflow-only;
+    // TARGET collapses to EMPTY on disk, so this is workflow-only;
     // no dirty mark.
+}
+
+void mock_simulate_load_scan() {
+    State& st = state();
+    if (st.load_scan_locked) return;
+    // Prefer a real catalog QR so the simulated path is identical to a
+    // live scan; fall back to the built-in catalog if no SD parts.json.
+    int n = parts_catalog::count();
+    if (n > 0 && load_apply_scan(parts_catalog::qr_at((int)(rng() % n)))) return;
+    lock();
+    copy_part(st.load_part, kCatalog[rng() % kCatalogN]);
+    st.load_scan_locked = true;
+    unlock();
 }
 
 void mock_place_reel(int slot_num) {
@@ -262,6 +297,7 @@ void mock_place_reel(int slot_num) {
     chosen->qty   = 100 + (int)(rng() % 900);
     st.load_step = LoadStep::Scan;
     st.load_part.valid = false;
+    st.load_scan_locked = false;
     unlock();
     state_store::mark_slot_dirty(slot_num);
 }
@@ -274,6 +310,7 @@ void mock_cancel_load() {
     }
     st.load_step = LoadStep::Scan;
     st.load_part.valid = false;
+    st.load_scan_locked = false;
     unlock();
 }
 

@@ -1,20 +1,91 @@
-// LOAD -- two states:
-//   Scan   : waiting on QR; "Simulate scan" / "Cancel"
-//   Placed : part identified; clickable dot grid lights all empty slots.
+// LOAD -- three views:
+//   Scan / watching : live QR poll; "Simulate scan" / "Cancel".
+//   Scan / locked   : a valid code latched in; shows the part with
+//                     "Rescan" / "Place reel" / "Cancel". Further scans
+//                     are ignored until the user hits Rescan.
+//   Placed          : clickable dot grid lights all empty slots.
+//
+// The QR scanner free-runs (it re-reports whatever code is in view), so
+// we latch the first recognised scan and stop polling until a rescan.
 #include "ui/screens/screens.h"
 #include "ui/screen_manager.h"
 #include "ui/widgets.h"
 #include "ui/theme.h"
 #include "ui/app_state.h"
+#include "sensors/qr_scanner.h"
 
+#include <Arduino.h>
+#include <lvgl.h>
 #include <stdio.h>
+#include <string.h>
 
 namespace ui::screens {
 
 using namespace theme;
 
+namespace {
+    constexpr int POLL_MS = 200;          // 5 Hz, well within device cap
+    lv_timer_t* g_timer       = nullptr;
+    lv_obj_t*   g_status_lbl  = nullptr;  // live status, only in watching view
+    char        g_status_cache[96] = {};
+}
+
+// Set the watching-view status line, skipping the redraw if unchanged.
+static void set_status(const char* text, bool warn) {
+    if (!g_status_lbl) return;
+    if (strcmp(g_status_cache, text) == 0) return;
+    snprintf(g_status_cache, sizeof(g_status_cache), "%s", text);
+    lv_label_set_text(g_status_lbl, text);
+    lv_obj_set_style_text_color(g_status_lbl,
+                                warn ? color::slot_warn() : color::text_muted(), 0);
+}
+
+// 5 Hz poll. No-ops unless the user is actively watching for a scan on
+// the Load screen (current screen, Scan step, not yet locked).
+static void on_poll(lv_timer_t*) {
+    if (ui::current() != ui::Screen::Load) return;
+    if (app::state().load_step != app::LoadStep::Scan) return;
+    if (app::state().load_scan_locked) return;
+
+    if (!qr_scanner::present()) {
+        set_status("No scanner detected on I2C (0x0C). Simulate a scan below.", true);
+        return;
+    }
+
+    char buf[256];
+    if (qr_scanner::poll(buf, sizeof(buf))) {
+        if (app::load_apply_scan(buf)) {
+            ui::rebuild_current();        // -> locked view
+            return;
+        }
+        // Recognised the scanner, not the code.
+        char msg[96];
+        snprintf(msg, sizeof(msg), "Unrecognised code: %.40s", buf);
+        set_status(msg, true);
+        return;
+    }
+    set_status("Watching... point the reel's QR code at the scanner.", false);
+}
+
+static void ensure_timer() {
+    if (!g_timer) g_timer = lv_timer_create(on_poll, POLL_MS, nullptr);
+}
+
+// ---- Handlers ------------------------------------------------------
 static void on_simulate(lv_event_t*) {
     app::mock_simulate_load_scan();
+    ui::rebuild_current();
+}
+static void on_rescan(lv_event_t*) {
+    // Drop any code the free-running sensor latched while we were
+    // locked, so we don't instantly re-lock the same reel.
+    char drain[256];
+    (void)qr_scanner::poll(drain, sizeof(drain));
+    app::load_rescan();
+    ui::rebuild_current();
+}
+static void on_place(lv_event_t*) {
+    app::load_begin_placement();
     ui::rebuild_current();
 }
 static void on_cancel(lv_event_t*) {
@@ -26,7 +97,8 @@ static void on_dot_pick(int slot_num) {
     ui::navigate(Screen::Home);
 }
 
-static void build_scan_state(lv_obj_t* body) {
+// ---- Scan: watching view ------------------------------------------
+static void build_watching_state(lv_obj_t* body) {
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_align(body, LV_FLEX_ALIGN_CENTER,
                                 LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -51,13 +123,16 @@ static void build_scan_state(lv_obj_t* body) {
     lv_obj_set_style_text_font(prompt, &lv_font_montserrat_20, 0);
     lv_obj_set_style_text_color(prompt, color::text(), 0);
 
-    lv_obj_t* hint = lv_label_create(body);
-    lv_label_set_text(hint, "Point the scanner at the reel's QR code, or simulate a scan below.");
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(hint, color::text_muted(), 0);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(hint, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(hint, 480);
+    // Live status line, driven by the poll timer.
+    g_status_lbl = lv_label_create(body);
+    lv_obj_set_style_text_font(g_status_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(g_status_lbl, color::text_muted(), 0);
+    lv_obj_set_style_text_align(g_status_lbl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(g_status_lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(g_status_lbl, 480);
+    lv_label_set_text(g_status_lbl,
+                      "Point the scanner at the reel's QR code, or simulate a scan below.");
+    g_status_cache[0] = 0;   // force the first timer paint
 
     lv_obj_t* btn_row = lv_obj_create(body);
     lv_obj_remove_style_all(btn_row);
@@ -69,6 +144,47 @@ static void build_scan_state(lv_obj_t* body) {
     button(btn_row, "Cancel",        BtnKind::Default, on_cancel);
 }
 
+// ---- Scan: locked view --------------------------------------------
+static void build_locked_state(lv_obj_t* body) {
+    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(body, 16, 0);
+    lv_obj_set_style_pad_gap(body, 12, 0);
+
+    auto& part = app::state().load_part;
+
+    lv_obj_t* res = card(body);
+    lv_obj_set_width(res, LV_PCT(100));
+    card_head(res, "SCANNED", LV_SYMBOL_OK);
+
+    lv_obj_t* nm = lv_label_create(res);
+    lv_label_set_text(nm, part.name);
+    lv_obj_set_style_text_font(nm, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(nm, color::text(), 0);
+
+    char meta[80];
+    snprintf(meta, sizeof(meta), "%s  %s  %s", part.id, part.pkg, part.mfg);
+    lv_obj_t* mt = lv_label_create(res);
+    lv_label_set_text(mt, meta);
+    lv_obj_set_style_text_font(mt, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(mt, color::text_muted(), 0);
+
+    lv_obj_t* hint = lv_label_create(body);
+    lv_label_set_text(hint, "Scan locked. Press Rescan to read a different reel.");
+    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(hint, color::text_muted(), 0);
+
+    lv_obj_t* btn_row = lv_obj_create(body);
+    lv_obj_remove_style_all(btn_row);
+    lv_obj_set_size(btn_row, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_gap(btn_row, 8, 0);
+    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+    button(btn_row, "Place reel", BtnKind::Primary, on_place);
+    button(btn_row, "Rescan",     BtnKind::Default, on_rescan);
+    button(btn_row, "Cancel",     BtnKind::Default, on_cancel);
+}
+
+// ---- Placed view (slot grid) --------------------------------------
 static void build_placed_state(lv_obj_t* body) {
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(body, 12, 0);
@@ -143,11 +259,17 @@ static void build_placed_state(lv_obj_t* body) {
 }
 
 void build_load(lv_obj_t* body) {
+    // g_status_lbl belongs to the watching view only; clear it so the
+    // poll timer never touches a stale pointer after a rebuild.
+    g_status_lbl = nullptr;
+
     if (app::state().load_step == app::LoadStep::Scan) {
-        build_scan_state(body);
+        if (app::state().load_scan_locked) build_locked_state(body);
+        else                               build_watching_state(body);
     } else {
         build_placed_state(body);
     }
+    ensure_timer();
 }
 
 } // namespace ui::screens

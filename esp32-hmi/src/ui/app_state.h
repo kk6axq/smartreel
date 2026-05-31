@@ -102,7 +102,9 @@ struct State {
 
     // Load workflow (active only on the Load screen)
     LoadStep load_step;
-    Part     load_part;            // valid when load_step == Placed
+    Part     load_part;            // valid once a scan is locked in
+    bool     load_scan_locked;     // true == a scan is locked; ignore
+                                   // further scans until rescan
 
     // Anomaly (single slot - mockup shows at most one at a time)
     Anomaly anomaly;
@@ -161,8 +163,22 @@ const Slot* find_part(const char* part_id);
 void resolve_pick_locations(PickJob& j);
 int  pick_job_done_count(const PickJob& j);
 
+// ---- Load workflow (real QR scan + mock placement) ----------------
+// Resolve a scanned QR label through the parts catalog and, if known,
+// lock it in as load_part (load_scan_locked = true). Returns true on a
+// recognised code, false if the label isn't in the catalog. Locking is
+// a no-op while a scan is already locked (caller rescans first).
+bool load_apply_scan(const char* qr);
+
+// Clear the locked scan and go back to watching for a fresh code.
+void load_rescan();
+
+// Commit the locked scan: light all empty slots as TARGET and advance
+// to the placement step. No-op unless a scan is locked.
+void load_begin_placement();
+
 // Mock-data triggers (called from UI handlers in the prototype build).
-void mock_simulate_load_scan();      // pick a random part, light empties
+void mock_simulate_load_scan();      // lock in a random catalog part
 void mock_place_reel(int slot_num);  // commit load to that slot
 void mock_cancel_load();
 void mock_manual_pick(int slot_num);

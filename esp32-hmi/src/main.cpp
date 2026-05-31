@@ -32,6 +32,7 @@
 #include "storage/sdcard.h"
 #include "storage/config_store.h"
 #include "storage/state_store.h"
+#include "storage/parts_catalog.h"
 #include "net/wifi_mgr.h"
 #include "rs485/rs485.h"
 #include "fw/fw_update.h"
@@ -419,6 +420,11 @@ void setup() {
     //     by mutations.
     bool state_loaded = state_store::load();
     app::set_boot_loaded_from_sd(state_loaded);
+
+    // 6c) Mock parts catalog: QR-label -> part map read from
+    //     /sdcard/parts.json. Drives the Load screen's QR scan flow.
+    //     Empty (lookups fail) if SD or parts.json is missing.
+    parts_catalog::load();
     if (!state_store::start_writer()) {
         Serial.println("[boot] state_store writer task failed to start");
     }
