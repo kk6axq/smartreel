@@ -9,10 +9,16 @@
 #include "ui/theme.h"
 #include "ui/screen_manager.h"
 #include "ui/wifi_password_modal.h"
+#include "ui/text_entry_modal.h"
 #include "net/wifi_mgr.h"
+#include "net/inv_api.h"
+#include "util/lvgl_async.h"
 #include "ui/app_state.h"
 #include "storage/config_store.h"
 
+#include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -186,22 +192,194 @@ static void build_scan_card(lv_obj_t* parent) {
     }
 }
 
+// ---- Inventree config + connection test ---------------------------
+//
+// URL and API token are edited via the shared text_entry_modal; the
+// rack location ID via a simple +/- nudge stored as an int. Save runs
+// every keystroke commit through config_store::save_config() so the
+// change survives a reboot.
+//
+// "Test connection" runs inv_api::health() on a one-shot worker task
+// (HTTPClient is blocking, can't sit on the LVGL thread). When it
+// returns, the result is posted back via lv_async_call and we rebuild
+// the screen. Test-in-progress is a tiny flag; the button stays
+// labelled "Testing..." until the worker completes.
+
+namespace {
+    bool g_test_in_flight = false;
+}
+
+static void persist_config() {
+    if (!config_store::save_config()) {
+        Serial.println("[net-cfg] save_config failed (no SD?)");
+    }
+}
+
+// ---- text edit callbacks ------------------------------------------
+
+static void on_url_saved(const char* v) {
+    auto& iv = config_store::cfg().inventree;
+    snprintf(iv.url, sizeof(iv.url), "%s", v ? v : "");
+    persist_config();
+    ui::rebuild_current();
+}
+static void on_token_saved(const char* v) {
+    auto& iv = config_store::cfg().inventree;
+    snprintf(iv.token, sizeof(iv.token), "%s", v ? v : "");
+    persist_config();
+    ui::rebuild_current();
+}
+static void on_locid_saved(const char* v) {
+    if (!v) return;
+    int n = atoi(v);
+    if (n < 0) n = 0;
+    config_store::cfg().inventree.location_id = n;
+    persist_config();
+    ui::rebuild_current();
+}
+
+static void on_url_tap(lv_event_t*) {
+    ui::TextEntryOpts o = {};
+    o.title       = "InvenTree URL";
+    o.initial     = config_store::cfg().inventree.url;
+    o.placeholder = "https://192.168.1.10:8443";
+    o.max_len     = sizeof(config_store::cfg().inventree.url) - 1;
+    o.on_save     = on_url_saved;
+    ui::text_entry_modal_open(o);
+}
+static void on_token_tap(lv_event_t*) {
+    ui::TextEntryOpts o = {};
+    o.title         = "API token";
+    o.initial       = config_store::cfg().inventree.token;
+    o.placeholder   = "dev-token";
+    o.password_mode = true;
+    o.max_len       = sizeof(config_store::cfg().inventree.token) - 1;
+    o.on_save       = on_token_saved;
+    ui::text_entry_modal_open(o);
+}
+static void on_locid_tap(lv_event_t*) {
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d", config_store::cfg().inventree.location_id);
+    ui::TextEntryOpts o = {};
+    o.title       = "Rack location ID";
+    o.initial     = buf;
+    o.placeholder = "42";
+    o.max_len     = 8;
+    o.on_save     = on_locid_saved;
+    ui::text_entry_modal_open(o);
+}
+
+// ---- connection test -----------------------------------------------
+//
+// Worker runs blocking inv_api::health(), then hops back to LVGL via
+// dispatch_on_lvgl() to rebuild the screen so the new status shows up.
+// The result itself is kept inside inv_api (last_health()).
+
+static void test_done_on_lvgl(void*) {
+    g_test_in_flight = false;
+    // Only redraw if the user is still on this screen; otherwise leave
+    // them where they navigated to.
+    if (ui::current() == ui::Screen::ConfigNetwork) ui::rebuild_current();
+}
+
+static void test_worker(void* /*arg*/) {
+    (void)inv_api::health();    // result is cached inside inv_api
+    ui::dispatch_on_lvgl(test_done_on_lvgl, nullptr);
+    vTaskDelete(nullptr);
+}
+
+static void on_test(lv_event_t*) {
+    if (g_test_in_flight) return;
+    g_test_in_flight = true;
+    ui::rebuild_current();
+    // 6 KB stack: NetworkClientSecure + ArduinoJson + HTTPClient fit
+    // comfortably; we measured ~3.5 KB peak during a /health round trip.
+    xTaskCreatePinnedToCore(test_worker, "inv-health", 6 * 1024,
+                            nullptr, 1, nullptr, PRO_CPU_NUM);
+}
+
+// ---- "last seen" line ----------------------------------------------
+
+static const char* health_label() {
+    const auto& h = inv_api::last_health();
+    static char buf[96];
+    if (g_test_in_flight) return "Testing...";
+    switch (h.status) {
+        case inv_api::Status::Ok: {
+            uint32_t age_s = (millis() - inv_api::last_success_ms()) / 1000;
+            snprintf(buf, sizeof(buf), "Online: %s v%s (%lus ago)",
+                     h.server[0] ? h.server : "?",
+                     h.version[0] ? h.version : "?",
+                     (unsigned long)age_s);
+            return buf;
+        }
+        case inv_api::Status::NotConfigured:
+            return "Not configured -- enter URL + token, then Test.";
+        case inv_api::Status::NoWifi:
+            return "No Wi-Fi connection.";
+        default:
+            snprintf(buf, sizeof(buf), "Last test failed: %s",
+                     h.error[0] ? h.error : inv_api::status_str(h.status));
+            return buf;
+    }
+}
+
+static lv_color_t health_color() {
+    const auto& h = inv_api::last_health();
+    if (g_test_in_flight) return color::accent();
+    if (h.status == inv_api::Status::Ok) return color::slot_picked();
+    if (h.status == inv_api::Status::NotConfigured) return color::text_muted();
+    return color::slot_warn();
+}
+
+// ---- builder -------------------------------------------------------
+
+// Make a form_input row "tappable": wraps the input box in a clickable
+// area that opens the text-entry modal. Returns the row for further
+// composition. The input box's own click handler isn't enough because
+// it lives inside the row; we attach to the row instead.
+static lv_obj_t* tappable_field_row(lv_obj_t* card, const char* label,
+                                    const char* desc, const char* value,
+                                    int width, bool masked,
+                                    lv_event_cb_t handler) {
+    lv_obj_t* r = form_row(card);
+    form_row_label(r, label, desc);
+    form_input(r, masked && value && value[0] ? "************" : value,
+               width, false);
+    lv_obj_add_flag(r, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(r, handler, LV_EVENT_CLICKED, nullptr);
+    return r;
+}
+
 static void build_inventree_card(lv_obj_t* parent) {
     lv_obj_t* fc = form_card(parent, "INVENTREE SERVER");
 
-    lv_obj_t* r = form_row(fc);
-    form_row_label(r, "URL", nullptr);
-    form_input(r, config_store::cfg().inventree.url, 280);
+    auto& iv = config_store::cfg().inventree;
 
-    r = form_row(fc);
-    form_row_label(r, "API token", "Tap to reveal & edit");
-    form_input(r, "************", 200);
+    tappable_field_row(fc, "URL", "Tap to edit",
+                       iv.url[0] ? iv.url : "(not set)", 280, false,
+                       on_url_tap);
 
-    r = form_row(fc);
-    form_row_label(r, "Rack location ID", "Inventree stock location");
+    tappable_field_row(fc, "API token", "Tap to edit",
+                       iv.token, 200, true,
+                       on_token_tap);
+
     char buf[16];
-    snprintf(buf, sizeof(buf), "%d", config_store::cfg().inventree.location_id);
-    form_input(r, buf, 0, true);
+    snprintf(buf, sizeof(buf), "%d", iv.location_id);
+    tappable_field_row(fc, "Rack location ID", "Inventree stock location",
+                       buf, 0, false, on_locid_tap);
+
+    // ---- Test connection + status strip ----
+    lv_obj_t* r = form_row(fc);
+    lv_obj_t* lbl = lv_label_create(r);
+    lv_label_set_text(lbl, health_label());
+    lv_obj_set_style_text_color(lbl, health_color(), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_obj_set_flex_grow(lbl, 1);
+
+    button(r, g_test_in_flight ? "Testing..." : "Test",
+           BtnKind::Primary, on_test);
 }
 
 void build_config_network(lv_obj_t* body) {

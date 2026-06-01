@@ -164,11 +164,19 @@ void resolve_pick_locations(PickJob& j);
 int  pick_job_done_count(const PickJob& j);
 
 // ---- Load workflow (real QR scan + mock placement) ----------------
-// Resolve a scanned QR label through the parts catalog and, if known,
-// lock it in as load_part (load_scan_locked = true). Returns true on a
-// recognised code, false if the label isn't in the catalog. Locking is
-// a no-op while a scan is already locked (caller rescans first).
+// Resolve a scanned QR label through the local SD parts catalog and,
+// if known, lock it in as load_part (load_scan_locked = true). Returns
+// true on a recognised code, false if the label isn't in the catalog.
+// Locking is a no-op while a scan is already locked (caller rescans
+// first). This is the OFFLINE path; the online path (inv_api) resolves
+// the code server-side and calls load_apply_part() with the result.
 bool load_apply_scan(const char* qr);
+
+// Lock the given Part as the loaded part. Used by the InvenTree client
+// after a successful POST /barcode/resolve so the load flow doesn't
+// have to round-trip through the local SD catalog. No-op when a scan
+// is already locked.
+void load_apply_part(const Part& p);
 
 // Clear the locked scan and go back to watching for a fresh code.
 void load_rescan();

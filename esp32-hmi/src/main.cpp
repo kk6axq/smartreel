@@ -34,6 +34,7 @@
 #include "storage/state_store.h"
 #include "storage/parts_catalog.h"
 #include "net/wifi_mgr.h"
+#include "net/inv_api.h"
 #include "rs485/rs485.h"
 #include "fw/fw_update.h"
 #include "fw/fw_core_update.h"
@@ -437,6 +438,11 @@ void setup() {
 
     // 8) WiFi (non-blocking; events drive app_state.online + status bar)
     wifi_mgr::init();
+
+    // 8b) InvenTree plugin client (no network traffic; just primes
+    //     the chip-id used for op_ids and zeroes the "last health"
+    //     cache). Actual HTTP happens lazily.
+    inv_api::init();
 
     // 9) RS485 master + POLL task
     {

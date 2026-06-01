@@ -248,6 +248,15 @@ bool load_apply_scan(const char* qr) {
     return true;
 }
 
+void load_apply_part(const Part& p) {
+    State& st = state();
+    if (st.load_scan_locked) return;           // already locked; ignore
+    lock();
+    st.load_part        = p;
+    st.load_scan_locked = true;
+    unlock();
+}
+
 void load_rescan() {
     State& st = state();
     lock();

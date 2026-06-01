@@ -13,8 +13,12 @@
 #include "ui/theme.h"
 #include "ui/app_state.h"
 #include "sensors/qr_scanner.h"
+#include "net/inv_api.h"
+#include "util/lvgl_async.h"
 
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <lvgl.h>
 #include <stdio.h>
 #include <string.h>
@@ -28,6 +32,16 @@ namespace {
     lv_timer_t* g_timer       = nullptr;
     lv_obj_t*   g_status_lbl  = nullptr;  // live status, only in watching view
     char        g_status_cache[96] = {};
+
+    // True while an inv_api::resolve_barcode() worker is running. The
+    // poll timer no-ops while in flight so a free-running scanner
+    // doesn't fire off a queue of identical requests.
+    bool g_resolve_in_flight = false;
+
+    // Last QR we kicked off a resolve for. Used to dedupe the case where
+    // the scanner re-reports the same code 5 times/sec while we're
+    // already working on it.
+    char g_last_resolve_qr[64] = {};
 }
 
 // Set the watching-view status line, skipping the redraw if unchanged.
@@ -40,12 +54,145 @@ static void set_status(const char* text, bool warn) {
                                 warn ? color::slot_warn() : color::text_muted(), 0);
 }
 
+// ---- Resolve worker ------------------------------------------------
+//
+// A QR code goes:
+//   load poll detects code -> kick worker task
+//   worker calls inv_api::resolve_barcode() (blocking, ~50-500 ms)
+//   worker dispatches the result back to the LVGL task
+//   LVGL callback either locks the part or surfaces an error
+//
+// If inv_api isn't usable (no wifi / not configured), we fall back to
+// the local /sdcard/parts.json catalog via app::load_apply_scan(), so
+// a totally offline rig still does the demo.
+
+struct ResolveReq {
+    char qr[64];
+    char op_id[40];
+};
+
+struct ResolveDone {
+    inv_api::ResolveResult result;
+    char                   qr[64];
+};
+
+// Convert inv_api::Part into the firmware's app::Part struct -- same
+// fields, slightly different sizes. snprintf truncates safely.
+static void copy_part(app::Part& dst, const inv_api::Part& src) {
+    snprintf(dst.id,   sizeof(dst.id),   "%s", src.id);
+    snprintf(dst.name, sizeof(dst.name), "%s", src.name);
+    snprintf(dst.pkg,  sizeof(dst.pkg),  "%s", src.pkg);
+    snprintf(dst.mfg,  sizeof(dst.mfg),  "%s", src.mfg);
+    dst.valid = true;
+}
+
+// Runs on the LVGL task after the worker completes. Always frees its
+// argument, always clears the in-flight flag.
+static void on_resolve_done(void* user) {
+    auto* d = static_cast<ResolveDone*>(user);
+    g_resolve_in_flight = false;
+
+    // If the user has navigated away or already locked a scan, drop
+    // the result on the floor. (Race: scanner fires, user taps
+    // Simulate scan or Cancel before the network call returns.)
+    if (ui::current() != ui::Screen::Load ||
+        app::state().load_step != app::LoadStep::Scan ||
+        app::state().load_scan_locked) {
+        delete d;
+        return;
+    }
+
+    const auto& r = d->result;
+    switch (r.status) {
+        case inv_api::Status::Ok: {
+            if (r.type == inv_api::ResolveType::StockItem) {
+                app::Part p; copy_part(p, r.stock.part);
+                app::load_apply_part(p);
+                ui::rebuild_current();
+                delete d; return;
+            }
+            if (r.type == inv_api::ResolveType::ItemPart) {
+                app::Part p; copy_part(p, r.part);
+                app::load_apply_part(p);
+                ui::rebuild_current();
+                delete d; return;
+            }
+            // type=unknown -- server rejected the code.
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Unrecognised code: %.40s", d->qr);
+            set_status(msg, true);
+            // Allow the same code to be tried again only after the
+            // scanner has reported a different one in the meantime.
+            break;
+        }
+        case inv_api::Status::NotConfigured:
+        case inv_api::Status::NoWifi: {
+            // Fall back to the local SD catalog so the offline demo
+            // still works.
+            if (app::load_apply_scan(d->qr)) {
+                ui::rebuild_current();
+            } else {
+                char msg[96];
+                snprintf(msg, sizeof(msg), "Offline + not in SD catalog: %.40s", d->qr);
+                set_status(msg, true);
+            }
+            break;
+        }
+        default: {
+            char msg[96];
+            snprintf(msg, sizeof(msg), "Resolve failed: %.60s",
+                     r.error[0] ? r.error : inv_api::status_str(r.status));
+            set_status(msg, true);
+            // Clear g_last_resolve_qr so a retry of the same code does
+            // re-fire after a transient failure.
+            g_last_resolve_qr[0] = 0;
+            break;
+        }
+    }
+    delete d;
+}
+
+static void resolve_worker(void* arg) {
+    auto* req = static_cast<ResolveReq*>(arg);
+    inv_api::ResolveResult res =
+        inv_api::resolve_barcode(req->qr, req->op_id);
+
+    auto* done = new ResolveDone();
+    done->result = res;
+    snprintf(done->qr, sizeof(done->qr), "%s", req->qr);
+    delete req;
+
+    ui::dispatch_on_lvgl(on_resolve_done, done);
+    vTaskDelete(nullptr);
+}
+
+static void start_resolve(const char* qr) {
+    g_resolve_in_flight = true;
+    snprintf(g_last_resolve_qr, sizeof(g_last_resolve_qr), "%s", qr);
+
+    auto* req = new ResolveReq();
+    snprintf(req->qr, sizeof(req->qr), "%s", qr);
+    inv_api::make_op_id(req->op_id, sizeof(req->op_id));
+
+    // 6 KB stack: HTTPClient + NetworkClientSecure + ArduinoJson fit
+    // comfortably; same sizing as the network-screen test worker.
+    BaseType_t ok = xTaskCreatePinnedToCore(
+        resolve_worker, "inv-resolve", 6 * 1024, req, 1, nullptr, PRO_CPU_NUM);
+    if (ok != pdPASS) {
+        delete req;
+        g_resolve_in_flight = false;
+        set_status("Resolve task failed to start.", true);
+    }
+}
+
 // 5 Hz poll. No-ops unless the user is actively watching for a scan on
-// the Load screen (current screen, Scan step, not yet locked).
+// the Load screen (current screen, Scan step, not yet locked, no
+// resolve in flight).
 static void on_poll(lv_timer_t*) {
     if (ui::current() != ui::Screen::Load) return;
     if (app::state().load_step != app::LoadStep::Scan) return;
     if (app::state().load_scan_locked) return;
+    if (g_resolve_in_flight) return;     // wait for the worker to finish
 
     if (!qr_scanner::present()) {
         set_status("No scanner detected on I2C (0x0C). Simulate a scan below.", true);
@@ -54,16 +201,20 @@ static void on_poll(lv_timer_t*) {
 
     char buf[256];
     if (qr_scanner::poll(buf, sizeof(buf))) {
-        if (app::load_apply_scan(buf)) {
-            ui::rebuild_current();        // -> locked view
+        // The scanner free-runs (re-reports the same code 5x/sec while
+        // it's in view); skip if we already resolved this exact code
+        // and it's still on the status line.
+        if (g_last_resolve_qr[0] && strcmp(g_last_resolve_qr, buf) == 0) {
             return;
         }
-        // Recognised the scanner, not the code.
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Unrecognised code: %.40s", buf);
-        set_status(msg, true);
+        set_status("Resolving...", false);
+        start_resolve(buf);
         return;
     }
+    // No code this tick -- the user may have moved the reel away after
+    // a failed resolve, so clear the dedupe key so the next sighting
+    // (possibly the same code) re-fires.
+    g_last_resolve_qr[0] = 0;
     set_status("Watching... point the reel's QR code at the scanner.", false);
 }
 
@@ -81,6 +232,7 @@ static void on_rescan(lv_event_t*) {
     // locked, so we don't instantly re-lock the same reel.
     char drain[256];
     (void)qr_scanner::poll(drain, sizeof(drain));
+    g_last_resolve_qr[0] = 0;     // forget the previous resolve dedupe
     app::load_rescan();
     ui::rebuild_current();
 }
