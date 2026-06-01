@@ -292,10 +292,13 @@ static void on_test(lv_event_t*) {
     if (g_test_in_flight) return;
     g_test_in_flight = true;
     ui::rebuild_current();
-    // 6 KB stack: NetworkClientSecure + ArduinoJson + HTTPClient fit
-    // comfortably; we measured ~3.5 KB peak during a /health round trip.
+    // Pin to APP_CPU at priority 1: PRO_CPU services the RGB LCD
+    // refresh DMA and must not be loaded with TLS / JSON work or the
+    // framebuffer flush tears. LVGL is also on APP_CPU at priority 2
+    // so it preempts us. 6 KB stack: NetworkClientSecure + ArduinoJson
+    // + HTTPClient fit comfortably (~3.5 KB peak measured).
     xTaskCreatePinnedToCore(test_worker, "inv-health", 6 * 1024,
-                            nullptr, 1, nullptr, PRO_CPU_NUM);
+                            nullptr, 1, nullptr, APP_CPU_NUM);
 }
 
 // ---- "last seen" line ----------------------------------------------

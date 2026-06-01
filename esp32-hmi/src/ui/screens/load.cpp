@@ -174,10 +174,14 @@ static void start_resolve(const char* qr) {
     snprintf(req->qr, sizeof(req->qr), "%s", qr);
     inv_api::make_op_id(req->op_id, sizeof(req->op_id));
 
+    // Pin to APP_CPU at priority 1 (LVGL is also on APP_CPU at
+    // priority 2 -- it preempts us). PRO_CPU services the RGB LCD
+    // DMA refresh; running TLS + JSON there during a scan causes
+    // visible tearing (see comment in main.cpp:lvgl_task creation).
     // 6 KB stack: HTTPClient + NetworkClientSecure + ArduinoJson fit
     // comfortably; same sizing as the network-screen test worker.
     BaseType_t ok = xTaskCreatePinnedToCore(
-        resolve_worker, "inv-resolve", 6 * 1024, req, 1, nullptr, PRO_CPU_NUM);
+        resolve_worker, "inv-resolve", 6 * 1024, req, 1, nullptr, APP_CPU_NUM);
     if (ok != pdPASS) {
         delete req;
         g_resolve_in_flight = false;
