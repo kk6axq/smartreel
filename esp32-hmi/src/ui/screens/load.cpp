@@ -1,12 +1,13 @@
-// LOAD -- three views:
-//   Scan / watching : live QR poll; "Simulate scan" / "Cancel".
-//   Scan / locked   : a valid code latched in; shows the part with
-//                     "Rescan" / "Place reel" / "Cancel". Further scans
-//                     are ignored until the user hits Rescan.
-//   Placed          : clickable dot grid lights all empty slots.
+// LOAD -- scan an InvenTree QR, then place:
+//   Scan / watching : live QR poll; "Cancel". A recognised scan resolves
+//                     against InvenTree and auto-advances to Placed.
+//   Placed          : clickable dot grid lights all empty slots, plus
+//                     "Rescan" / "Cancel".
 //
-// The QR scanner free-runs (it re-reports whatever code is in view), so
-// we latch the first recognised scan and stop polling until a rescan.
+// There is no offline/simulated load path: a load must resolve to a real
+// InvenTree stock item so the placement can be reported back. The QR
+// scanner free-runs (it re-reports whatever code is in view), so we latch
+// the first recognised scan and stop polling until a rescan.
 #include "ui/screens/screens.h"
 #include "ui/screen_manager.h"
 #include "ui/widgets.h"
@@ -15,6 +16,7 @@
 #include "sensors/qr_scanner.h"
 #include "net/inv_api.h"
 #include "util/lvgl_async.h"
+#include "app/leds.h"
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -22,6 +24,11 @@
 #include <lvgl.h>
 #include <stdio.h>
 #include <string.h>
+
+// Action log to the USB serial console, always on, greppable "[load]"
+// prefix — mirrors inv_sync's "[inv]" so the scan->resolve->place flow is
+// visible alongside the op layer.
+#define LOAD_LOG(fmt, ...) Serial.printf("[load] " fmt "\n", ##__VA_ARGS__)
 
 namespace ui::screens {
 
@@ -62,9 +69,8 @@ static void set_status(const char* text, bool warn) {
 //   worker dispatches the result back to the LVGL task
 //   LVGL callback either locks the part or surfaces an error
 //
-// If inv_api isn't usable (no wifi / not configured), we fall back to
-// the local /sdcard/parts.json catalog via app::load_apply_scan(), so
-// a totally offline rig still does the demo.
+// If inv_api isn't usable (no wifi / not configured), the scan can't be
+// resolved and the status line says so -- there is no offline load.
 
 struct ResolveReq {
     char qr[64];
@@ -84,6 +90,16 @@ static void copy_part(app::Part& dst, const inv_api::Part& src) {
     snprintf(dst.pkg,  sizeof(dst.pkg),  "%s", src.pkg);
     snprintf(dst.mfg,  sizeof(dst.mfg),  "%s", src.mfg);
     dst.valid = true;
+}
+
+// Once a scan locks a part we skip the separate "confirm + Place"
+// card and go straight into placement: light the open slots and show
+// the dot grid. The scanned part is still shown (the placed view keeps
+// the scan card up top), and Rescan/Cancel there recover a misscan.
+static void advance_to_placement() {
+    app::load_begin_placement();
+    leds::light_target_slots();
+    ui::rebuild_current();
 }
 
 // Runs on the LVGL task after the worker completes. Always frees its
@@ -106,18 +122,43 @@ static void on_resolve_done(void* user) {
     switch (r.status) {
         case inv_api::Status::Ok: {
             if (r.type == inv_api::ResolveType::StockItem) {
+                LOAD_LOG("resolved stockitem id=%d qty=%d slot_num=%d part=%s",
+                         r.stock.id, r.stock.qty, r.stock.slot_num, r.stock.part.id);
+                // Already housed in a rack slot? Tell the user instead
+                // of starting a duplicate load (user story 1 / contract).
+                if (r.stock.slot_num > 0) {
+                    LOAD_LOG("  already in slot %d -- not loading", r.stock.slot_num);
+                    char msg[96];
+                    snprintf(msg, sizeof(msg), "%s is already in slot %d",
+                             r.stock.part.id, r.stock.slot_num);
+                    set_status(msg, true);
+                    break;
+                }
                 app::Part p; copy_part(p, r.stock.part);
-                app::load_apply_part(p);
-                ui::rebuild_current();
+                app::load_apply_part(p, r.stock.id, r.stock.qty);
+                advance_to_placement();
                 delete d; return;
             }
             if (r.type == inv_api::ResolveType::ItemPart) {
-                app::Part p; copy_part(p, r.part);
-                app::load_apply_part(p);
-                ui::rebuild_current();
-                delete d; return;
+                // A part QR names the part, not a specific reel. Loading
+                // needs a stock item to transfer into the slot, so refuse
+                // and tell the user to scan the reel's own (StockItem) QR.
+                LOAD_LOG("resolved PART %s -- not a stock item, refusing load", r.part.id);
+                char msg[120];
+                snprintf(msg, sizeof(msg),
+                         "%s is a part code, not a reel. Scan the reel's "
+                         "stock-item QR instead.", r.part.id);
+                set_status(msg, true);
+                break;
+            }
+            if (r.type == inv_api::ResolveType::Location) {
+                LOAD_LOG("resolved LOCATION -- not a stock item, refusing load");
+                set_status("That's a location code, not a reel. Scan the "
+                           "reel's stock-item QR.", true);
+                break;
             }
             // type=unknown -- server rejected the code.
+            LOAD_LOG("resolve: unknown code '%.40s'", d->qr);
             char msg[96];
             snprintf(msg, sizeof(msg), "Unrecognised code: %.40s", d->qr);
             set_status(msg, true);
@@ -126,19 +167,16 @@ static void on_resolve_done(void* user) {
             break;
         }
         case inv_api::Status::NotConfigured:
-        case inv_api::Status::NoWifi: {
-            // Fall back to the local SD catalog so the offline demo
-            // still works.
-            if (app::load_apply_scan(d->qr)) {
-                ui::rebuild_current();
-            } else {
-                char msg[96];
-                snprintf(msg, sizeof(msg), "Offline + not in SD catalog: %.40s", d->qr);
-                set_status(msg, true);
-            }
+            LOAD_LOG("resolve: InvenTree not configured");
+            set_status("InvenTree not configured. Settings > Network to set it up.", true);
             break;
-        }
+        case inv_api::Status::NoWifi:
+            LOAD_LOG("resolve: no connection");
+            set_status("Not connected to InvenTree. Loading needs a connection.", true);
+            break;
         default: {
+            LOAD_LOG("resolve FAILED: %s (http %d)",
+                     r.error[0] ? r.error : inv_api::status_str(r.status), r.http_code);
             char msg[96];
             snprintf(msg, sizeof(msg), "Resolve failed: %.60s",
                      r.error[0] ? r.error : inv_api::status_str(r.status));
@@ -168,6 +206,7 @@ static void resolve_worker(void* arg) {
 
 static void start_resolve(const char* qr) {
     g_resolve_in_flight = true;
+    LOAD_LOG("scan '%.48s' -> resolving against InvenTree", qr);
     snprintf(g_last_resolve_qr, sizeof(g_last_resolve_qr), "%s", qr);
 
     auto* req = new ResolveReq();
@@ -199,7 +238,7 @@ static void on_poll(lv_timer_t*) {
     if (g_resolve_in_flight) return;     // wait for the worker to finish
 
     if (!qr_scanner::present()) {
-        set_status("No scanner detected on I2C (0x0C). Simulate a scan below.", true);
+        set_status("No QR scanner detected on I2C (0x0C).", true);
         return;
     }
 
@@ -227,29 +266,27 @@ static void ensure_timer() {
 }
 
 // ---- Handlers ------------------------------------------------------
-static void on_simulate(lv_event_t*) {
-    app::mock_simulate_load_scan();
-    ui::rebuild_current();
-}
+// Rescan from the placement view: revert the lit targets, drop back to
+// watching for a fresh code. mock_cancel_load() resets load_step to Scan
+// and clears the locked part; we stay on the Load screen.
 static void on_rescan(lv_event_t*) {
-    // Drop any code the free-running sensor latched while we were
-    // locked, so we don't instantly re-lock the same reel.
     char drain[256];
-    (void)qr_scanner::poll(drain, sizeof(drain));
-    g_last_resolve_qr[0] = 0;     // forget the previous resolve dedupe
-    app::load_rescan();
-    ui::rebuild_current();
-}
-static void on_place(lv_event_t*) {
-    app::load_begin_placement();
+    (void)qr_scanner::poll(drain, sizeof(drain));   // flush the latched code
+    g_last_resolve_qr[0] = 0;        // forget the previous resolve dedupe
+    app::mock_cancel_load();
+    leds::clear_all();               // drop the lit placement targets
     ui::rebuild_current();
 }
 static void on_cancel(lv_event_t*) {
     app::mock_cancel_load();
+    leds::clear_all();               // drop any lit placement targets
     ui::go_back();
 }
 static void on_dot_pick(int slot_num) {
-    app::mock_place_reel(slot_num);
+    LOAD_LOG("place (on-screen dot) slot=%d stock_id=%d",
+             slot_num, app::state().load_stock_id);
+    app::mock_place_reel(slot_num);  // logs '[inv] queue assign' when stock_id>0
+    leds::clear_all();               // drop the lit placement targets
     ui::navigate(Screen::Home);
 }
 
@@ -271,23 +308,23 @@ static void build_watching_state(lv_obj_t* body) {
     lv_obj_clear_flag(qr, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t* qr_l = lv_label_create(qr);
     lv_label_set_text(qr_l, "QR");
-    lv_obj_set_style_text_font(qr_l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(qr_l, &lv_font_montserrat_28, 0);
     lv_obj_center(qr_l);
 
     lv_obj_t* prompt = lv_label_create(body);
     lv_label_set_text(prompt, "Scan part barcode");
-    lv_obj_set_style_text_font(prompt, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_font(prompt, &lv_font_montserrat_36, 0);
     lv_obj_set_style_text_color(prompt, color::text(), 0);
 
     // Live status line, driven by the poll timer.
     g_status_lbl = lv_label_create(body);
-    lv_obj_set_style_text_font(g_status_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(g_status_lbl, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(g_status_lbl, color::text_muted(), 0);
     lv_obj_set_style_text_align(g_status_lbl, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(g_status_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(g_status_lbl, 480);
     lv_label_set_text(g_status_lbl,
-                      "Point the scanner at the reel's QR code, or simulate a scan below.");
+                      "Point the scanner at the reel's InvenTree QR code.");
     g_status_cache[0] = 0;   // force the first timer paint
 
     lv_obj_t* btn_row = lv_obj_create(body);
@@ -296,48 +333,7 @@ static void build_watching_state(lv_obj_t* body) {
     lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_gap(btn_row, 8, 0);
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
-    button(btn_row, "Simulate scan", BtnKind::Primary, on_simulate);
-    button(btn_row, "Cancel",        BtnKind::Default, on_cancel);
-}
-
-// ---- Scan: locked view --------------------------------------------
-static void build_locked_state(lv_obj_t* body) {
-    lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(body, 16, 0);
-    lv_obj_set_style_pad_gap(body, 12, 0);
-
-    auto& part = app::state().load_part;
-
-    lv_obj_t* res = card(body);
-    lv_obj_set_width(res, LV_PCT(100));
-    card_head(res, "SCANNED", LV_SYMBOL_OK);
-
-    lv_obj_t* nm = lv_label_create(res);
-    lv_label_set_text(nm, part.name);
-    lv_obj_set_style_text_font(nm, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_color(nm, color::text(), 0);
-
-    char meta[80];
-    snprintf(meta, sizeof(meta), "%s  %s  %s", part.id, part.pkg, part.mfg);
-    lv_obj_t* mt = lv_label_create(res);
-    lv_label_set_text(mt, meta);
-    lv_obj_set_style_text_font(mt, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(mt, color::text_muted(), 0);
-
-    lv_obj_t* hint = lv_label_create(body);
-    lv_label_set_text(hint, "Scan locked. Press Rescan to read a different reel.");
-    lv_obj_set_style_text_font(hint, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(hint, color::text_muted(), 0);
-
-    lv_obj_t* btn_row = lv_obj_create(body);
-    lv_obj_remove_style_all(btn_row);
-    lv_obj_set_size(btn_row, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_gap(btn_row, 8, 0);
-    lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
-    button(btn_row, "Place reel", BtnKind::Primary, on_place);
-    button(btn_row, "Rescan",     BtnKind::Default, on_rescan);
-    button(btn_row, "Cancel",     BtnKind::Default, on_cancel);
+    button(btn_row, "Cancel", BtnKind::Default, on_cancel);
 }
 
 // ---- Placed view (slot grid) --------------------------------------
@@ -355,14 +351,18 @@ static void build_placed_state(lv_obj_t* body) {
 
     lv_obj_t* nm = lv_label_create(res);
     lv_label_set_text(nm, part.name);
-    lv_obj_set_style_text_font(nm, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_font(nm, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(nm, color::text(), 0);
 
-    char meta[80];
-    snprintf(meta, sizeof(meta), "%s  %s  %s", part.id, part.pkg, part.mfg);
+    char meta[96];
+    if (app::state().load_qty > 0)
+        snprintf(meta, sizeof(meta), "%s  %s  %s  -  qty %d",
+                 part.id, part.pkg, part.mfg, app::state().load_qty);
+    else
+        snprintf(meta, sizeof(meta), "%s  %s  %s", part.id, part.pkg, part.mfg);
     lv_obj_t* mt = lv_label_create(res);
     lv_label_set_text(mt, meta);
-    lv_obj_set_style_text_font(mt, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(mt, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(mt, color::text_muted(), 0);
 
     // Target row inside card (small target dot + instruction)
@@ -391,7 +391,7 @@ static void build_placed_state(lv_obj_t* body) {
              lit, lit == 1 ? "" : "s");
     lv_obj_t* tt = lv_label_create(tgt);
     lv_label_set_text(tt, hint);
-    lv_obj_set_style_text_font(tt, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(tt, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(tt, color::text(), 0);
     lv_obj_set_flex_grow(tt, 1);
     lv_label_set_long_mode(tt, LV_LABEL_LONG_DOT);
@@ -410,7 +410,11 @@ static void build_placed_state(lv_obj_t* body) {
     lv_obj_set_flex_flow(btn_row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(btn_row, LV_FLEX_ALIGN_CENTER,
                                     LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_gap(btn_row, 8, 0);
     lv_obj_clear_flag(btn_row, LV_OBJ_FLAG_SCROLLABLE);
+    // Place is now automatic on scan; Rescan recovers a misscan without
+    // leaving the Load screen, Cancel backs all the way out.
+    button(btn_row, "Rescan", BtnKind::Default, on_rescan);
     button(btn_row, "Cancel", BtnKind::Default, on_cancel);
 }
 
@@ -419,12 +423,11 @@ void build_load(lv_obj_t* body) {
     // poll timer never touches a stale pointer after a rebuild.
     g_status_lbl = nullptr;
 
-    if (app::state().load_step == app::LoadStep::Scan) {
-        if (app::state().load_scan_locked) build_locked_state(body);
-        else                               build_watching_state(body);
-    } else {
-        build_placed_state(body);
-    }
+    // A recognised scan locks the part and immediately advances to
+    // LoadStep::Placed (see advance_to_placement), so there's no separate
+    // "locked, awaiting Place" view: watch while scanning, grid once placed.
+    if (app::state().load_step == app::LoadStep::Placed) build_placed_state(body);
+    else                                                 build_watching_state(body);
     ensure_timer();
 }
 

@@ -32,7 +32,6 @@
 #include "storage/sdcard.h"
 #include "storage/config_store.h"
 #include "storage/state_store.h"
-#include "storage/parts_catalog.h"
 #include "net/wifi_mgr.h"
 #include "net/inv_api.h"
 #include "rs485/rs485.h"
@@ -53,6 +52,11 @@
 #include "ui/app_state.h"
 #include "ui/status_bar.h"
 #include "ui/screen_manager.h"
+#include "ui/screens/screens.h"
+#include "app/hw_mirror.h"
+#include "app/slot_map.h"
+#include "app/leds.h"
+#include "app/inv_sync.h"
 
 // ===================================================================
 // Serial console.
@@ -212,13 +216,20 @@ static void lvgl_task(void* /*arg*/) {
 // any UI side effects (anomaly modal, etc.).
 // ===================================================================
 
-// Heap-passed payload from POLL task -> LVGL task for input changes.
-struct InputChangeEvent {
-    uint8_t  chain;       // 1..4 (reel_id + 1)
-    uint16_t prev_bits;   // bit N == presence of slot at position N+1
-    uint16_t new_bits;
-    uint32_t ts_ms;
+// Heap-passed payloads from the POLL task -> LVGL task.
+struct InputChangeEv {
+    uint8_t  port, module;
+    uint32_t prev, now;       // 32-bit module word (S + D bits)
 };
+struct TopologyEv {
+    uint8_t  port, module_count;
+    bool     inserted;        // count went up vs down
+};
+
+static uint32_t be32_at(const uint8_t* p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+           ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+}
 
 // Apply one slot's transition. Runs on the LVGL task; takes the
 // app_state lock for its mutations.
@@ -226,6 +237,10 @@ static void apply_slot_change(int slot_num, bool now_present) {
     auto& st = app::state();
     app::Slot* slot = app::slot_by_num(slot_num);
     if (!slot) return;
+
+    Serial.printf("[hmi] slot %d presence settled -> %s (state=%d, part=%s)\n",
+                  slot_num, now_present ? "PRESENT" : "absent",
+                  (int)slot->state, slot->part.valid ? slot->part.id : "-");
 
     // Was this change part of an active workflow's expectation?
     bool expected = false;
@@ -239,10 +254,26 @@ static void apply_slot_change(int slot_num, bool now_present) {
             if (job.items[i].slot_num == slot_num && !job.items[i].picked) {
                 app::lock();
                 job.items[i].picked = true;
-                slot->state = app::SlotState::PICKED;
+                // The reel physically left (-> staging in InvenTree), so
+                // the slot is now empty. Progress is tracked by the item's
+                // picked flag, not slot state.
+                slot->state      = app::SlotState::EMPTY;
+                slot->part.valid = false;
+                slot->qty        = 0;
                 app::unlock();
                 state_store::mark_jobs_dirty();
                 state_store::mark_slot_dirty(slot_num);
+                // The reel is out: darken its slot LED now.
+                leds::light_slot(slot_num, 0, 0, 0);
+                // Report to InvenTree: whole-reel transfer to the job's
+                // destination (user story 4). Partial-pick semantics fall
+                // out for free -- each removed reel is reported as it
+                // happens, so cancelling later moves nothing extra.
+                inv_sync::queue_job_pick(job.id, i, slot_num);
+                // Reflect the pick immediately on the Pick screen (row ->
+                // Done, progress bar advances) instead of waiting for a
+                // manual tap or the next rebuild.
+                if (ui::current() == ui::Screen::PickActive) ui::rebuild_current();
                 expected = true;
                 break;
             }
@@ -255,37 +286,221 @@ static void apply_slot_change(int slot_num, bool now_present) {
     if (now_present && st.load_step == app::LoadStep::Placed
         && slot->state == app::SlotState::TARGET) {
         app::mock_place_reel(slot_num);
+        leds::clear_all();              // drop the lit placement targets
+        ui::navigate(ui::Screen::Home); // finish the load workflow
+        expected = true;
+    }
+
+    // Pick-out workflow (armed from the View screen): physically pulling
+    // the armed reel confirms its removal from inventory -- no tamper
+    // fault. Extinguish its LED and refresh the View if it's up.
+    if (!now_present && slot_num == st.pick_out_slot) {
+        app::finish_pick_out(slot_num);
+        leds::light_slot(slot_num, 0, 0, 0);
+        if (ui::current() == ui::Screen::View) ui::rebuild_current();
         expected = true;
     }
 
     if (expected) return;
 
-    // Unexpected: update slot state to reflect the anomaly and raise
-    // the modal. The anomaly content is auto-populated by
-    // mock_raise_anomaly using the first matching slot; for Phase 1
-    // that's good enough.
-    app::lock();
-    slot->state = now_present ? app::SlotState::WARN
-                              : app::SlotState::ERROR;
-    app::unlock();
-    state_store::mark_slot_dirty(slot_num);
+    // Unexpected change.
+    //  - INSERTION: a reel placed without a scan -> a (non-latching)
+    //    "added" warning. No part is assigned yet (not inventoried).
+    //  - REMOVAL of an INVENTORIED reel (one with an assigned part):
+    //    tampering -> latching "removed" fault.
+    //  - REMOVAL of a reel that was only inserted-but-never-inventoried:
+    //    just undo the accidental insert. Clear its "added" warning and
+    //    reset the slot; raise NO fault.
+    if (now_present) {
+        app::lock();
+        slot->state = app::SlotState::WARN;
+        app::unlock();
+        state_store::mark_slot_dirty(slot_num);
+        ui::anomaly_modal_raise(app::AnomalyKind::Added);
+        inv_sync::queue_anomaly("added", slot_num, "reel inserted without scan");
+        return;
+    }
 
-    ui::anomaly_modal_raise(now_present ? app::AnomalyKind::Added
-                                        : app::AnomalyKind::Removed);
+    if (slot->part.valid) {
+        app::lock();
+        slot->state = app::SlotState::ERROR;
+        app::unlock();
+        state_store::mark_slot_dirty(slot_num);
+        ui::anomaly_modal_raise(app::AnomalyKind::Removed);
+        // Reconcile server-side: the reel is physically gone, so its
+        // stock moves to the "pulled" bin rather than silently rotting
+        // in the slot location (contract: POST /rack/slots/n/clear).
+        char detail[64];
+        snprintf(detail, sizeof(detail), "unexpected removal of %s", slot->part.id);
+        inv_sync::queue_anomaly("removed", slot_num, detail);
+        inv_sync::queue_clear(slot_num, "anomaly:removed");
+    } else {
+        app::lock();
+        slot->state = app::SlotState::EMPTY;
+        app::unlock();
+        state_store::mark_slot_dirty(slot_num);
+        // Clear the transient "added" warning raised by the insert, if up.
+        if (app::state().anomaly.kind == app::AnomalyKind::Added)
+            ui::anomaly_modal_resolve();
+    }
+}
+
+// Aggregate reel-presence of a logical slot: present if ANY physical
+// reel-slot in its (possibly combined) run reads present.
+static bool logical_present(const app::Slot& ls) {
+    for (int w = 0; w < ls.width; ++w) {
+        int pix = ls.module * 16 + ls.mslot + w;
+        if (hw_mirror::slot_present(ls.port, pix / 16, pix % 16)) return true;
+    }
+    return false;
+}
+
+// ---- Reel-presence debounce ------------------------------------------
+//
+// A reel seating or being pulled chatters the presence switch for tens to
+// hundreds of ms. Acting on the first edge causes premature/incorrect
+// place, pick, and anomaly actions (and a bounce back can flip-flop the
+// server). So we hold each logical slot's presence change for
+// PRESENCE_DEBOUNCE_MS of stability before committing it to
+// apply_slot_change(). A change that reverts within the window is dropped.
+//
+// All of this lives on the LVGL task (apply_input_change is dispatched
+// there, the tick is an lv_timer), so no locking is needed.
+static constexpr uint32_t PRESENCE_DEBOUNCE_MS = 600;
+
+struct SlotDebounce {
+    bool     known        = false;  // last_present is valid
+    bool     last_present = false;  // presence already committed for this slot
+    bool     pending      = false;  // a candidate change is settling
+    bool     pending_val  = false;  // candidate presence
+    uint32_t pending_ms   = 0;      // millis() when pending_val last (re)set
+};
+static SlotDebounce g_deb[app::MAX_LOGICAL_SLOTS + 1];
+
+// Re-baseline every slot's committed presence to current physical truth.
+// Called after boot sync and after any rack rebuild (logical numbering
+// can change), so the next real edge debounces from the right starting
+// point instead of firing a spurious insert/remove.
+static void presence_debounce_reset() {
+    for (auto& d : g_deb) { d = SlotDebounce{}; }
+    app::State& st = app::state();
+    for (int i = 0; i < st.n_rack; ++i) {
+        int num = st.rack[i].slot;
+        if (num < 0 || num > app::MAX_LOGICAL_SLOTS) continue;
+        g_deb[num].known        = true;
+        g_deb[num].last_present = logical_present(st.rack[i]);
+    }
+}
+
+// Record a (possibly bouncing) presence reading for a logical slot.
+static void note_presence(int slot_num, bool present) {
+    if (slot_num < 0 || slot_num > app::MAX_LOGICAL_SLOTS) return;
+    SlotDebounce& d = g_deb[slot_num];
+    if (!d.known) { d.known = true; d.last_present = present; return; }
+    if (present == d.last_present) { d.pending = false; return; }  // reverted/no-op
+    if (!d.pending || d.pending_val != present) {
+        d.pending     = true;
+        d.pending_val = present;
+        d.pending_ms  = millis();   // (re)start the settle clock
+    }
+}
+
+// 100 ms lv_timer: commit any presence change that has held steady for
+// PRESENCE_DEBOUNCE_MS, re-reading live presence at commit time.
+static void presence_debounce_tick(lv_timer_t*) {
+    const uint32_t now = millis();
+    for (int num = 0; num <= app::MAX_LOGICAL_SLOTS; ++num) {
+        SlotDebounce& d = g_deb[num];
+        if (!d.pending) continue;
+        if ((int32_t)(now - d.pending_ms) < (int32_t)PRESENCE_DEBOUNCE_MS) continue;
+        const app::Slot* s = app::slot_by_num(num);
+        const bool live = s ? logical_present(*s) : d.pending_val;
+        d.pending = false;
+        if (live != d.last_present) {
+            d.last_present = live;
+            apply_slot_change(num, live);
+        }
+    }
+}
+
+// A divider bit changed on (port, module). Post-commission this is a
+// fault (raise the divider anomaly); pre-commission it re-shapes the
+// logical rack (rebuild + refresh the UI live).
+static void handle_divider_change(uint8_t port, uint8_t module,
+                                  uint32_t prev, uint32_t now) {
+    if (config_store::cfg().rack.committed) {
+        const auto& div = config_store::cfg().rack.dividers;
+        for (int s = 0; s < 16; ++s) {
+            if (s == 0 && module == 0) continue;                 // port edge
+            const bool changed = ((prev ^ now) >> (2 * s)) & 1u;
+            if (!changed) continue;
+            const bool expect_present = !div.is_pulled(port, module, (uint8_t)s);
+            const bool live_present   = app::divider_present_bit(now, s);
+            if (expect_present && !live_present) {
+                ui::anomaly_modal_raise(app::AnomalyKind::Divider);
+                return;
+            }
+        }
+    } else {
+        app::rebuild_rack();
+        presence_debounce_reset();   // logical numbering may have changed
+        ui::mark_all_dirty();
+    }
 }
 
 static void apply_input_change(void* user) {
-    auto* ev = static_cast<InputChangeEvent*>(user);
+    auto* ev = static_cast<InputChangeEv*>(user);
     if (!ev) return;
+    hw_mirror::set_inputs(ev->port, ev->module, ev->now);
 
-    const uint16_t changed = ev->prev_bits ^ ev->new_bits;
-    for (int bit = 0; bit < 16; ++bit) {
-        if (!(changed & (1u << bit))) continue;
-        const int position = bit + 1;        // 1..16 within chain
-        const app::Slot* s = app::slot_at(ev->chain, position);
-        if (!s) continue;
-        const bool now_present = (ev->new_bits & (1u << bit)) != 0;
-        apply_slot_change(s->slot, now_present);
+    // Self Test "Buttons" card: while that screen is up, surface raw bit
+    // changes and SKIP the workflow/anomaly logic below (which raises the
+    // anomaly modal -- currently crashing the HMI). This lets a reel
+    // button or divider be pressed and its decoded slot read cleanly.
+    if (ui::current() == ui::Screen::ConfigSelftest) {
+        ui::screens::selftest_on_input(ev->port, ev->module, ev->prev, ev->now);
+        delete ev;
+        return;
+    }
+
+    const uint32_t changed = ev->prev ^ ev->now;
+    bool divider_changed = false;
+    for (int s = 0; s < 16; ++s) {
+        if ((changed >> (2 * s + 1)) & 1u) {                    // reel-presence (S) bit
+            const app::Slot* ls = app::slot_at_physical(ev->port, ev->module, s);
+            // Debounced: note the reading now, commit after it settles.
+            if (ls) note_presence(ls->slot, logical_present(*ls));
+        }
+        if ((changed >> (2 * s)) & 1u) divider_changed = true;  // divider (D) bit
+    }
+    if (divider_changed) handle_divider_change(ev->port, ev->module, ev->prev, ev->now);
+    delete ev;
+}
+
+// A module was inserted/removed on a port (topology change).
+static void apply_topology(void* user) {
+    auto* ev = static_cast<TopologyEv*>(user);
+    if (!ev) return;
+    hw_mirror::set_module_count(ev->port, ev->module_count);
+
+    // Pull the (now-present) modules' input words so presence/dividers
+    // are known. Blocking RS485 read -- fine for a rare topology event.
+    uint32_t words[hw_mirror::MAX_MODULES] = { 0 };
+    int nmods = 0;
+    if (rs485::read_inputs(ev->port, words, hw_mirror::MAX_MODULES, &nmods) == rs485::Status::Ok)
+        for (int m = 0; m < nmods && m < hw_mirror::MAX_MODULES; ++m)
+            hw_mirror::set_inputs(ev->port, m, words[m]);
+
+    const auto& rc = config_store::cfg().rack;
+    if (rc.committed && ev->module_count != rc.module_count[ev->port]) {
+        // Topology drifted from the commissioned layout -- warn, keep numbering.
+        ui::anomaly_modal_raise(ev->inserted ? app::AnomalyKind::Added
+                                             : app::AnomalyKind::Removed);
+    } else {
+        // Pre-commission: follow the live topology.
+        app::rebuild_rack();
+        presence_debounce_reset();   // logical numbering may have changed
+        ui::mark_all_dirty();
     }
     delete ev;
 }
@@ -293,58 +508,33 @@ static void apply_input_change(void* user) {
 static void on_rs485_event(const rs485::Event& e, void* /*user*/) {
     switch (e.type) {
         case rs485::EVT_INPUT_CHANGE: {
-            // Two payload shapes (per docs/smartreel-rs485-protocol.md):
-            //   9 B: reel_id(1) + prev(2 BE) + new(2 BE) + ts(4 BE)
-            //        -- 16 inputs per reel (two chained 74HC165s)
-            //   7 B: reel_id(1) + prev(1) + new(1) + ts(4 BE)
-            //        -- 8 inputs per reel (single PISO)
-            uint8_t  chain = 0;
-            uint16_t prev  = 0;
-            uint16_t now   = 0;
-            uint32_t ts    = 0;
-            if (e.payload_len == 9) {
-                chain = e.payload[0] + 1;
-                prev  = ((uint16_t)e.payload[1] << 8) | e.payload[2];
-                now   = ((uint16_t)e.payload[3] << 8) | e.payload[4];
-                ts    = ((uint32_t)e.payload[5] << 24) |
-                        ((uint32_t)e.payload[6] << 16) |
-                        ((uint32_t)e.payload[7] <<  8) |
-                        ((uint32_t)e.payload[8] <<  0);
-            } else if (e.payload_len == 7) {
-                chain = e.payload[0] + 1;
-                prev  = e.payload[1];
-                now   = e.payload[2];
-                ts    = ((uint32_t)e.payload[3] << 24) |
-                        ((uint32_t)e.payload[4] << 16) |
-                        ((uint32_t)e.payload[5] <<  8) |
-                        ((uint32_t)e.payload[6] <<  0);
-            } else {
-                log_w("rs485 INPUT_CHANGE: unexpected payload_len=%u",
-                      e.payload_len);
+            // 14 B: port(1) module(1) prev32(4 BE) new32(4 BE) ts32(4 BE).
+            if (e.payload_len < 14) {
+                log_w("rs485 INPUT_CHANGE: short payload_len=%u", e.payload_len);
                 break;
             }
-            (void)ts;
-            auto* ev = new (std::nothrow) InputChangeEvent{ chain, prev, now, ts };
+            auto* ev = new (std::nothrow) InputChangeEv{
+                e.payload[0], e.payload[1],
+                be32_at(&e.payload[2]), be32_at(&e.payload[6]) };
             if (ev) ui::dispatch_on_lvgl(apply_input_change, ev);
             break;
         }
 
-        case rs485::EVT_REEL_INSERTED:
-            // For Phase 1b we just log. Per-chain presence tracking
-            // and "whole chain disappeared" anomaly is a future
-            // enhancement.
-            if (e.payload_len >= 3) {
-                uint8_t  reel = e.payload[0];
-                uint16_t mv   = ((uint16_t)e.payload[1] << 8) | e.payload[2];
-                log_i("rs485 REEL_INSERTED reel=%u sense=%u mV", reel, mv);
-            }
+        case rs485::EVT_REEL_INSERTED: {
+            // 4 B: port(1) module_count(1) sense_mv(2 BE).
+            if (e.payload_len < 2) break;
+            auto* ev = new (std::nothrow) TopologyEv{ e.payload[0], e.payload[1], true };
+            if (ev) ui::dispatch_on_lvgl(apply_topology, ev);
             break;
+        }
 
-        case rs485::EVT_REEL_REMOVED:
-            if (e.payload_len >= 1) {
-                log_i("rs485 REEL_REMOVED reel=%u", e.payload[0]);
-            }
+        case rs485::EVT_REEL_REMOVED: {
+            // 2 B: port(1) module_count(1).
+            if (e.payload_len < 2) break;
+            auto* ev = new (std::nothrow) TopologyEv{ e.payload[0], e.payload[1], false };
+            if (ev) ui::dispatch_on_lvgl(apply_topology, ev);
             break;
+        }
 
         case rs485::EVT_SENSE_THRESHOLD:
             log_i("rs485 SENSE_THRESHOLD evt (%u bytes)", e.payload_len);
@@ -414,18 +604,12 @@ void setup() {
     (void)app::state();           // seed mock data
     config_store::apply_to_app_state();
 
-    // 6b) Runtime-state store: load persisted rack + pick queue from
-    //     SD over the mock seed. Returns false if SD missing or files
-    //     don't exist yet (first boot) -- the mock seed stays. The
-    //     writer task takes over from here for any saves triggered
-    //     by mutations.
-    bool state_loaded = state_store::load();
-    app::set_boot_loaded_from_sd(state_loaded);
+    // 6b) Runtime-state store load is deferred until after the reel
+    //     topology is known (step 9b), since rack contents now key to
+    //     logical slot numbers that the live/committed topology defines.
 
-    // 6c) Mock parts catalog: QR-label -> part map read from
-    //     /sdcard/parts.json. Drives the Load screen's QR scan flow.
-    //     Empty (lookups fail) if SD or parts.json is missing.
-    parts_catalog::load();
+    // 6c) Runtime-state writer task. (Loads are resolved live against
+    //     InvenTree via inv_api now — no SD parts catalog.)
     if (!state_store::start_writer()) {
         Serial.println("[boot] state_store writer task failed to start");
     }
@@ -444,6 +628,10 @@ void setup() {
     //     cache). Actual HTTP happens lazily.
     inv_api::init();
 
+    // 8c) Background InvenTree sync: health poll, rack registration +
+    //     reconciliation, pick-job fetches, and the mutation op queue.
+    inv_sync::start();
+
     // 9) RS485 master + POLL task
     {
         rs485::set_event_handler(on_rs485_event, nullptr);
@@ -454,6 +642,29 @@ void setup() {
             Serial.println("[boot] rs485 ready (polling Core)");
         }
     }
+
+    // 9b) Reel topology: read the live module counts + input words from
+    //     the Core, build the dynamic rack, then overlay persisted slot
+    //     contents (keyed by logical number). If the Core is absent the
+    //     rack starts empty and fills in as modules appear.
+    if (hw_mirror::sync_from_core())
+        Serial.println("[boot] reel topology synced from Core");
+    else
+        Serial.println("[boot] no reel topology yet (Core absent?)");
+
+    // Boot LED self-test: chase one pixel down each connected reel
+    // module, then all off (no-ops if no Core/modules present).
+    leds::boot_chase();
+
+    app::rebuild_rack();
+    bool state_loaded = state_store::load();
+    app::set_boot_loaded_from_sd(state_loaded);
+    ui::mark_all_dirty();    // refresh screens built before topology was known
+
+    // Baseline the presence debounce to current physical truth, then run
+    // its 100 ms settle tick on the LVGL task.
+    presence_debounce_reset();
+    lv_timer_create(presence_debounce_tick, 100, nullptr);
 
     // LVGL runs on its own task pinned to APP_CPU so the RGB DMA
     // refresh on PRO_CPU isn't disrupted.

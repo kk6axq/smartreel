@@ -43,13 +43,13 @@ lv_obj_t* card_head(lv_obj_t* parent, const char* uppercase_label,
     lv_obj_t* l = lv_label_create(head);
     lv_label_set_text(l, uppercase_label);
     lv_obj_set_style_text_color(l, color::text_muted(), 0);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
 
     if (right_meta && right_meta[0]) {
         lv_obj_t* r = lv_label_create(head);
         lv_label_set_text(r, right_meta);
         lv_obj_set_style_text_color(r, color::text_muted(), 0);
-        lv_obj_set_style_text_font(r, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(r, &lv_font_montserrat_24, 0);
     }
     return head;
 }
@@ -89,62 +89,71 @@ lv_obj_t* dot_grid_card(lv_obj_t* parent, const DotGridOpts& opts) {
     lv_obj_set_width(c, LV_PCT(100));
 
     // Header row
+    app::State& st = app::state();
     char summary[64] = "";
     int occ = app::slots_occupied();
-    int n   = app::N_SLOTS;
+    int emp = app::slots_empty();
+    int n   = st.n_rack;
     snprintf(summary, sizeof(summary),
-             "%d occupied  %d empty  %d total", occ, n - occ, n);
+             "%d occupied  %d empty  %d total", occ, emp, n);
     card_head(c, opts.header_label, summary);
 
-    // Grid: 1 chain-label column + 16 slot columns, 4 rows
-    static lv_coord_t cols[] = {
-        28, LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
-            LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
-            LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
-            LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
-        LV_GRID_TEMPLATE_LAST
-    };
-    static lv_coord_t rows[] = {
-        LV_GRID_CONTENT, LV_GRID_CONTENT, LV_GRID_CONTENT, LV_GRID_CONTENT,
-        LV_GRID_TEMPLATE_LAST
-    };
+    // Dynamic layout: one labelled row per populated port; each logical
+    // slot is one dot, widened for combined (double/triple-width) slots,
+    // wrapping within the port row.
+    lv_obj_t* list = lv_obj_create(c);
+    lv_obj_remove_style_all(list);
+    lv_obj_set_size(list, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 6, 0);
+    lv_obj_clear_flag(list, LV_OBJ_FLAG_SCROLLABLE);
 
-    lv_obj_t* g = lv_obj_create(c);
-    lv_obj_remove_style_all(g);
-    lv_obj_set_size(g, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_layout(g, LV_LAYOUT_GRID);
-    lv_obj_set_grid_dsc_array(g, cols, rows);
-    lv_obj_set_style_pad_column(g, 4, 0);
-    lv_obj_set_style_pad_row(g, 4, 0);
-    lv_obj_clear_flag(g, LV_OBJ_FLAG_SCROLLABLE);
+    if (n == 0) {
+        lv_obj_t* none = lv_label_create(list);
+        lv_label_set_text(none, "No reel modules detected");
+        lv_obj_set_style_text_color(none, color::text_muted(), 0);
+        lv_obj_set_style_text_font(none, &lv_font_montserrat_24, 0);
+    }
 
-    for (int chain = 1; chain <= app::N_CHAINS; ++chain) {
-        char cl[6]; snprintf(cl, sizeof(cl), "C%d", chain);
-        lv_obj_t* lbl = lv_label_create(g);
+    for (int p = 0; p < app::N_PORTS; ++p) {
+        bool any = false;
+        for (int i = 0; i < n; ++i) if (st.rack[i].port == p) { any = true; break; }
+        if (!any) continue;
+
+        lv_obj_t* row = lv_obj_create(list);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_gap(row, 6, 0);
+        lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
+
+        char cl[6]; snprintf(cl, sizeof(cl), "P%d", p + 1);
+        lv_obj_t* lbl = lv_label_create(row);
         lv_label_set_text(lbl, cl);
         lv_obj_set_style_text_color(lbl, color::text_muted(), 0);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
-        lv_obj_set_grid_cell(lbl, LV_GRID_ALIGN_END, 0, 1,
-                                  LV_GRID_ALIGN_CENTER, chain - 1, 1);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+        lv_obj_set_width(lbl, 46);   // "P4" at 24pt
 
-        for (int pos = 1; pos <= app::SLOTS_PER_CHAIN; ++pos) {
-            const app::Slot* s = app::slot_at(chain, pos);
-            lv_obj_t* dot;
-            if (opts.clickable && s && s->state == app::SlotState::TARGET) {
-                dot = lv_btn_create(g);
-            } else {
-                dot = lv_obj_create(g);
-            }
+        lv_obj_t* dots = lv_obj_create(row);
+        lv_obj_remove_style_all(dots);
+        lv_obj_set_size(dots, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_grow(dots, 1);
+        lv_obj_set_flex_flow(dots, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_style_pad_gap(dots, 4, 0);
+        lv_obj_clear_flag(dots, LV_OBJ_FLAG_SCROLLABLE);
+
+        for (int i = 0; i < n; ++i) {
+            const app::Slot& s = st.rack[i];
+            if (s.port != p) continue;
+            const bool clickable = opts.clickable && s.state == app::SlotState::TARGET;
+            lv_obj_t* dot = clickable ? lv_btn_create(dots) : lv_obj_create(dots);
             lv_obj_remove_style_all(dot);
-            if (s) lv_obj_add_style(dot, dot_style_for(s->state), 0);
-            lv_obj_set_size(dot, 22, 22);
+            lv_obj_add_style(dot, dot_style_for(s.state), 0);
+            lv_obj_set_size(dot, 22 * s.width + 4 * (s.width - 1), 22);
             lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
-            lv_obj_set_grid_cell(dot, LV_GRID_ALIGN_STRETCH, pos, 1,
-                                       LV_GRID_ALIGN_CENTER, chain - 1, 1);
-
-            if (opts.clickable && opts.on_dot_click && s &&
-                s->state == app::SlotState::TARGET) {
-                auto* ctx = new DotClickCtx{ s->slot, opts.on_dot_click };
+            if (clickable && opts.on_dot_click) {
+                auto* ctx = new DotClickCtx{ s.slot, opts.on_dot_click };
                 lv_obj_add_event_cb(dot, dot_click_cb,    LV_EVENT_CLICKED, ctx);
                 lv_obj_add_event_cb(dot, dot_ctx_free_cb, LV_EVENT_DELETE,  ctx);
             }
@@ -190,7 +199,7 @@ lv_obj_t* dot_grid_card(lv_obj_t* parent, const DotGridOpts& opts) {
             lv_obj_t* l = lv_label_create(item);
             lv_label_set_text(l, it.name);
             lv_obj_set_style_text_color(l, color::text_muted(), 0);
-            lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+            lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
         }
     }
     return c;
@@ -239,8 +248,8 @@ void row_add_slot_num(lv_obj_t* row, const char* text) {
     lv_obj_t* l = lv_label_create(row);
     lv_label_set_text(l, text);
     lv_obj_set_style_text_color(l, color::text(), 0);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_min_width(l, 50, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_min_width(l, 84, 0);   // "#64" / "BO-0042" at 28pt
 }
 
 void row_add_main_two_line(lv_obj_t* row, const char* primary, const char* meta) {
@@ -254,7 +263,7 @@ void row_add_main_two_line(lv_obj_t* row, const char* primary, const char* meta)
 
     lv_obj_t* l1 = lv_label_create(col);
     lv_label_set_text(l1, primary);
-    lv_obj_set_style_text_font(l1, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(l1, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(l1, color::text(), 0);
     lv_label_set_long_mode(l1, LV_LABEL_LONG_DOT);
     lv_obj_set_width(l1, LV_PCT(100));
@@ -262,7 +271,7 @@ void row_add_main_two_line(lv_obj_t* row, const char* primary, const char* meta)
     if (meta && meta[0]) {
         lv_obj_t* l2 = lv_label_create(col);
         lv_label_set_text(l2, meta);
-        lv_obj_set_style_text_font(l2, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(l2, &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_color(l2, color::text_muted(), 0);
         lv_label_set_long_mode(l2, LV_LABEL_LONG_DOT);
         lv_obj_set_width(l2, LV_PCT(100));
@@ -273,12 +282,12 @@ void row_add_qty_two_line(lv_obj_t* row, const char* num, const char* unit) {
     lv_obj_t* col = lv_obj_create(row);
     lv_obj_remove_style_all(col);
     lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_size(col, 70, LV_SIZE_CONTENT);
+    lv_obj_set_size(col, 110, LV_SIZE_CONTENT);   // "5000" at 28pt
     lv_obj_clear_flag(col, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* l1 = lv_label_create(col);
     lv_label_set_text(l1, num);
-    lv_obj_set_style_text_font(l1, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(l1, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(l1, color::text(), 0);
     lv_obj_set_style_text_align(l1, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_width(l1, LV_PCT(100));
@@ -286,7 +295,7 @@ void row_add_qty_two_line(lv_obj_t* row, const char* num, const char* unit) {
     if (unit && unit[0]) {
         lv_obj_t* l2 = lv_label_create(col);
         lv_label_set_text(l2, unit);
-        lv_obj_set_style_text_font(l2, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(l2, &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_color(l2, color::text_muted(), 0);
         lv_obj_set_style_text_align(l2, LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_set_width(l2, LV_PCT(100));
@@ -328,14 +337,18 @@ lv_obj_t* tile(lv_obj_t* parent, const TileOpts& o) {
 
     lv_obj_t* lbl = lv_label_create(t);
     lv_label_set_text(lbl, o.label);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(lbl, color::text(), 0);
 
     if (o.sublabel && o.sublabel[0]) {
         lv_obj_t* sub = lv_label_create(t);
         lv_label_set_text(sub, o.sublabel);
-        lv_obj_set_style_text_font(sub, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(sub, &lv_font_montserrat_24, 0);
         lv_obj_set_style_text_color(sub, color::text_muted(), 0);
+        // Wrap inside the tile instead of clipping at the right edge.
+        lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(sub, LV_PCT(100));
+        lv_obj_set_style_text_align(sub, LV_TEXT_ALIGN_CENTER, 0);
     }
     return t;
 }
@@ -358,12 +371,12 @@ lv_obj_t* menu_item(lv_obj_t* parent, const char* name, const char* desc,
 
     lv_obj_t* n = lv_label_create(m);
     lv_label_set_text(n, name);
-    lv_obj_set_style_text_font(n, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(n, &lv_font_montserrat_36, 0);
     lv_obj_set_style_text_color(n, color::text(), 0);
 
     lv_obj_t* d = lv_label_create(m);
     lv_label_set_text(d, desc);
-    lv_obj_set_style_text_font(d, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(d, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(d, color::text_muted(), 0);
     lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(d, LV_PCT(100));
@@ -406,7 +419,7 @@ lv_obj_t* form_card(lv_obj_t* parent, const char* heading) {
         lv_obj_t* h = lv_label_create(c);
         lv_label_set_text(h, heading);
         lv_obj_set_style_text_color(h, color::text_muted(), 0);
-        lv_obj_set_style_text_font(h, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(h, &lv_font_montserrat_24, 0);
         lv_obj_set_style_pad_bottom(h, 8, 0);
     }
     return c;
@@ -436,13 +449,13 @@ void form_row_label(lv_obj_t* row, const char* label, const char* desc) {
     lv_obj_t* l = lv_label_create(col);
     lv_label_set_text(l, label);
     lv_obj_set_style_text_color(l, color::text(), 0);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
 
     if (desc && desc[0]) {
         lv_obj_t* d = lv_label_create(col);
         lv_label_set_text(d, desc);
         lv_obj_set_style_text_color(d, color::text_muted(), 0);
-        lv_obj_set_style_text_font(d, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(d, &lv_font_montserrat_24, 0);
         lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
         lv_obj_set_width(d, LV_PCT(100));
     }
@@ -452,13 +465,13 @@ lv_obj_t* form_input(lv_obj_t* row, const char* value, int width, bool small) {
     lv_obj_t* box = lv_obj_create(row);
     lv_obj_remove_style_all(box);
     lv_obj_add_style(box, const_cast<lv_style_t*>(&theme::s().input), 0);
-    lv_obj_set_size(box, small ? 80 : width, 32);
+    lv_obj_set_size(box, small ? 110 : width, 54);   // fits 24pt value text
     lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
 
     lv_obj_t* l = lv_label_create(box);
     lv_label_set_text(l, value ? value : "");
     lv_obj_set_style_text_color(l, color::text(), 0);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
     lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
     lv_obj_set_width(l, LV_PCT(100));
     lv_obj_align(l, LV_ALIGN_LEFT_MID, 0, 0);
@@ -554,11 +567,35 @@ lv_obj_t* empty_state(lv_obj_t* parent, const char* text) {
     lv_obj_t* l = lv_label_create(parent);
     lv_label_set_text(l, text);
     lv_obj_set_style_text_color(l, color::text_muted(), 0);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_width(l, LV_PCT(100));
     lv_obj_set_style_pad_all(l, 20, 0);
     return l;
+}
+
+// ---------------------------------------------------------------------
+// Notice banner
+// ---------------------------------------------------------------------
+lv_obj_t* banner(lv_obj_t* parent, const char* text, bool warn) {
+    lv_obj_t* box = lv_obj_create(parent);
+    lv_obj_remove_style_all(box);
+    lv_obj_set_size(box, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_radius(box, layout::RADIUS, 0);
+    lv_obj_set_style_bg_color(box, warn ? color::slot_warn() : color::surface(), 0);
+    lv_obj_set_style_bg_opa(box, warn ? LV_OPA_20 : LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(box, warn ? color::slot_warn() : color::border(), 0);
+    lv_obj_set_style_border_width(box, 1, 0);
+    lv_obj_set_style_pad_all(box, 10, 0);
+    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_t* l = lv_label_create(box);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_color(l, warn ? color::slot_warn() : color::text_muted(), 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
+    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(l, LV_PCT(100));
+    return box;
 }
 
 } // namespace ui

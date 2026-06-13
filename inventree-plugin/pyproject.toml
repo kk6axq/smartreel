@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "inventree-smart-reel"
+version = "0.2.0"
+description = "InvenTree plugin for the SmartReel smart reel holder"
+readme = "README.md"
+requires-python = ">=3.9"
+authors = [{ name = "Lukas", email = "lukas@freeflysystems.com" }]
+
+[project.entry-points."inventree_plugins"]
+SmartReelPlugin = "smart_reel.core:SmartReelPlugin"
+
+[tool.setuptools.packages.find]
+include = ["smart_reel*"]

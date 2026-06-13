@@ -87,4 +87,8 @@ void      progress_bar_set(lv_obj_t* bar, int percent);
 // ---- Empty-state placeholder ---------------------------------------
 lv_obj_t* empty_state(lv_obj_t* parent, const char* text);
 
+// ---- Full-width notice banner (connectivity warnings etc.) ---------
+// warn=true renders amber-on-dark; warn=false renders muted/info.
+lv_obj_t* banner(lv_obj_t* parent, const char* text, bool warn);
+
 } // namespace ui

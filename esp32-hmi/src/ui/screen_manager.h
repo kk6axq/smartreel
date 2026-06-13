@@ -17,9 +17,10 @@ enum class Screen {
     Home,
     Load,
     View,
+    RackGrid,              // slot-occupancy dot grid (moved off Home)
     PickList,
     PickActive,
-    Configure,
+    Configure,             // displayed as "Settings"
     ConfigSlots,
     ConfigNetwork,
     ConfigSelftest,
@@ -33,6 +34,8 @@ void init();                  // Build status bar, modal, then navigate(Home)
 void navigate(Screen s);
 void go_back();
 void rebuild_current();       // re-run the current screen's renderer
+void mark_all_dirty();        // flag every cached screen to rebuild on next show
+                              // (and rebuild the current one now)
 
 Screen current();
 

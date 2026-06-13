@@ -1,0 +1,62 @@
+{
+  "_comment": "Parts catalogue mirrors esp32-hmi/src/ui/app_state.cpp:kCatalog and the eight physical QR codes printed by scripts/gen_mock_qr.py. Eight named stock items use those QR labels so the existing printed sheet keeps working; the rest get synthetic SR-SI-#### barcodes and seed the rack to a ~60% occupancy that mirrors the HMI's deterministic mock layout.",
+  "parts": [
+    {"id": "R-10K-0805",   "name": "RES 10kohm 1% 0805",   "pkg": "0805",   "mfg": "Yageo"},
+    {"id": "R-1K-0603",    "name": "RES 1kohm 1% 0603",    "pkg": "0603",   "mfg": "Yageo"},
+    {"id": "R-100R-0603",  "name": "RES 100ohm 1% 0603",   "pkg": "0603",   "mfg": "Yageo"},
+    {"id": "R-4K7-0805",   "name": "RES 4.7kohm 1% 0805",  "pkg": "0805",   "mfg": "Yageo"},
+    {"id": "C-100N-0603",  "name": "CAP 100nF X7R 0603",   "pkg": "0603",   "mfg": "Murata"},
+    {"id": "C-10U-0805",   "name": "CAP 10uF X5R 0805",    "pkg": "0805",   "mfg": "Samsung"},
+    {"id": "C-1U-0603",    "name": "CAP 1uF X7R 0603",     "pkg": "0603",   "mfg": "Murata"},
+    {"id": "L-10U-0805",   "name": "IND 10uH 0805",        "pkg": "0805",   "mfg": "Coilcraft"},
+    {"id": "D-LED-G-0603", "name": "LED green 0603",       "pkg": "0603",   "mfg": "Lite-On"},
+    {"id": "D-LED-R-0603", "name": "LED red 0603",         "pkg": "0603",   "mfg": "Lite-On"},
+    {"id": "D-1N4148",     "name": "DIO 1N4148 SOD-123",   "pkg": "SOD123", "mfg": "NXP"},
+    {"id": "Q-2N7002",     "name": "MOS 2N7002 SOT-23",    "pkg": "SOT23",  "mfg": "ON Semi"},
+    {"id": "IC-LM358",     "name": "OPA LM358 SOIC-8",     "pkg": "SOIC8",  "mfg": "TI"},
+    {"id": "IC-555",       "name": "TIM NE555 SOIC-8",     "pkg": "SOIC8",  "mfg": "TI"},
+    {"id": "IC-ESP32S3",   "name": "MCU ESP32-S3-WROOM",   "pkg": "Module", "mfg": "Espressif"},
+    {"id": "IC-RP2040",    "name": "MCU RP2040 QFN-56",    "pkg": "QFN56",  "mfg": "RaspPi"},
+    {"id": "CONN-USBC",    "name": "CONN USB-C receptacle","pkg": "SMD",    "mfg": "Molex"},
+    {"id": "CONN-JST",     "name": "CONN JST-PH 2-pin",    "pkg": "TH",     "mfg": "JST"}
+  ],
+  "physical_qr_stock": [
+    {"barcode": "MOCK-PART-00001", "part_id": "R-10K-0805",   "qty": 5000, "batch": "B-241001"},
+    {"barcode": "MOCK-PART-00002", "part_id": "C-100N-0603",  "qty": 4000, "batch": "B-241002"},
+    {"barcode": "MOCK-PART-00003", "part_id": "IC-LM358",     "qty":  120, "batch": "B-241003"},
+    {"barcode": "MOCK-PART-00004", "part_id": "D-LED-G-0603", "qty":  800, "batch": "B-241004"},
+    {"barcode": "MOCK-PART-00005", "part_id": "IC-ESP32S3",   "qty":   25, "batch": "B-241005"},
+    {"barcode": "MOCK-PART-00006", "part_id": "Q-2N7002",     "qty": 1500, "batch": "B-241006"},
+    {"barcode": "MOCK-PART-00007", "part_id": "C-10U-0805",   "qty": 3000, "batch": "B-241007"},
+    {"barcode": "MOCK-PART-00008", "part_id": "CONN-USBC",    "qty":   60, "batch": "B-241008"}
+  ],
+  "pick_jobs": [
+    {
+      "id": "BO-0042", "name": "PCB-Rev-A x 5", "requested_at": "14:02",
+      "items": [
+        {"part_id": "R-10K-0805",    "qty": 50},
+        {"part_id": "C-100N-0603",   "qty": 20},
+        {"part_id": "IC-LM358",      "qty":  5},
+        {"part_id": "D-LED-G-0603",  "qty":  5}
+      ]
+    },
+    {
+      "id": "BO-0043", "name": "Test-Build-12 proto", "requested_at": "14:18",
+      "items": [
+        {"part_id": "IC-ESP32S3",  "qty":  3},
+        {"part_id": "CONN-USBC",   "qty":  3},
+        {"part_id": "C-10U-0805",  "qty": 12}
+      ]
+    },
+    {
+      "id": "BO-0044", "name": "Sensor-Hub v2", "requested_at": "14:32",
+      "items": [
+        {"part_id": "IC-RP2040",  "qty":  2},
+        {"part_id": "R-4K7-0805", "qty": 24},
+        {"part_id": "Q-2N7002",   "qty":  8},
+        {"part_id": "D-1N4148",   "qty": 16},
+        {"part_id": "CONN-JST",   "qty":  4}
+      ]
+    }
+  ]
+}

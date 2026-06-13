@@ -32,18 +32,27 @@ struct Part {
     bool valid;      // false == empty slot
 };
 
+// A logical slot, possibly combining several physical reel-slots (when
+// the dividers between them are pulled). `slot` is the logical number
+// (the lowest base number in the combined run); numbers can have gaps.
 struct Slot {
-    int       slot;       // 1..64 (logical)
-    int       chain;      // 1..4
-    int       position;   // 1..16 within chain
+    int       slot;       // logical number (stable; gaps allowed)
+    int       chain;      // = port + 1 (display)
+    int       position;   // = module*16 + mslot + 1, 1-based within port (display)
+    int       width;      // physical reel-slots spanned (1 = standard width)
+    uint8_t   port;       // 0..3
+    uint8_t   module;     // module of the first physical slot in the run
+    uint8_t   mslot;      // slot-in-module of the first physical slot (0..15)
     SlotState state;
     Part      part;
     int       qty;
 };
 
-static constexpr int N_CHAINS         = 4;
-static constexpr int SLOTS_PER_CHAIN  = 16;
-static constexpr int N_SLOTS          = N_CHAINS * SLOTS_PER_CHAIN;
+// Rack geometry. The rack is now DYNAMIC: built at runtime from live (or
+// committed) reel topology + divider layout. These are capacities only.
+static constexpr int N_PORTS           = 4;
+static constexpr int MAX_LOGICAL_SLOTS = N_PORTS * 4 * 16;   // 256 (4 modules x 16/port)
+static constexpr int N_SLOTS           = MAX_LOGICAL_SLOTS;  // array capacity
 
 // ---- Pick job -----------------------------------------------------
 struct PickItemRequest {
@@ -63,6 +72,7 @@ struct PickJob {
     char     id[12];           // "BO-0042"
     char     name[64];         // "PCB-Rev-A x 5"
     char     requested[8];     // "14:02"
+    char     status[10];       // server-derived: pending | partial | done
     PickItem items[16];
     int      n_items;
 };
@@ -92,8 +102,9 @@ enum class LoadStep : uint8_t { Scan, Placed };
 
 // ---- Top-level state ---------------------------------------------
 struct State {
-    // Rack
-    Slot rack[N_SLOTS];
+    // Rack (dynamic): rack[0..n_rack-1] are the live logical slots.
+    Slot rack[MAX_LOGICAL_SLOTS];
+    int  n_rack;
 
     // Pick queue
     PickJob pick_jobs[MAX_PICK_JOBS];
@@ -103,8 +114,16 @@ struct State {
     // Load workflow (active only on the Load screen)
     LoadStep load_step;
     Part     load_part;            // valid once a scan is locked in
+    int      load_stock_id;        // InvenTree StockItem id from the
+                                   // resolve, 0 when offline/unknown
+    int      load_qty;             // qty from the resolve, 0 when unknown
     bool     load_scan_locked;     // true == a scan is locked; ignore
                                    // further scans until rescan
+
+    // Pick-out workflow (View screen): logical slot armed to be pulled
+    // out of inventory, or -1 when none. Removing the reel from this
+    // slot confirms the removal; any other removal is still a tamper.
+    int      pick_out_slot;
 
     // Anomaly (single slot - mockup shows at most one at a time)
     Anomaly anomaly;
@@ -152,9 +171,16 @@ int  slots_occupied();
 int  slots_empty();
 int  slots_target();
 
-// Locate a slot by logical number (1..N_SLOTS). Returns nullptr if oob.
+// Locate a slot by logical number. Linear scan (numbers have gaps).
 Slot*       slot_by_num(int n);
-const Slot* slot_at(int chain, int position);  // 1-indexed both args
+// The logical slot containing physical (port, module, mslot). nullptr if absent.
+const Slot* slot_at_physical(int port, int module, int mslot);
+
+// Rebuild the dynamic rack from the effective topology: the committed
+// config if commissioned, else the live hardware mirror. Preserves slot
+// contents (part/qty) by logical number across rebuilds and derives
+// presence from the hardware mirror. Call after a topology change.
+void rebuild_rack();
 
 // Find first occupied slot holding the given part_id.
 const Slot* find_part(const char* part_id);
@@ -163,20 +189,12 @@ const Slot* find_part(const char* part_id);
 void resolve_pick_locations(PickJob& j);
 int  pick_job_done_count(const PickJob& j);
 
-// ---- Load workflow (real QR scan + mock placement) ----------------
-// Resolve a scanned QR label through the local SD parts catalog and,
-// if known, lock it in as load_part (load_scan_locked = true). Returns
-// true on a recognised code, false if the label isn't in the catalog.
-// Locking is a no-op while a scan is already locked (caller rescans
-// first). This is the OFFLINE path; the online path (inv_api) resolves
-// the code server-side and calls load_apply_part() with the result.
-bool load_apply_scan(const char* qr);
-
-// Lock the given Part as the loaded part. Used by the InvenTree client
-// after a successful POST /barcode/resolve so the load flow doesn't
-// have to round-trip through the local SD catalog. No-op when a scan
-// is already locked.
-void load_apply_part(const Part& p);
+// ---- Load workflow (real QR scan only) ----------------------------
+// Lock the given Part as the loaded part. Called by the Load screen
+// after a successful POST /barcode/resolve. No-op when a scan is
+// already locked. stock_id/qty come from the resolve; a bare-part
+// resolve (no stock item) passes 0 and the placement stays local.
+void load_apply_part(const Part& p, int stock_id = 0, int qty = 0);
 
 // Clear the locked scan and go back to watching for a fresh code.
 void load_rescan();
@@ -185,11 +203,25 @@ void load_rescan();
 // to the placement step. No-op unless a scan is locked.
 void load_begin_placement();
 
-// Mock-data triggers (called from UI handlers in the prototype build).
-void mock_simulate_load_scan();      // lock in a random catalog part
+// Remove the reel in a logical slot from inventory: clear its part + qty
+// and mark the slot empty, then persist. Local inventory only -- reporting
+// the removal to InvenTree (inv_api::clear_slot) is a follow-up, same as
+// load placement.
+void remove_reel(int slot_num);
+
+// ---- Pick-out workflow (View screen) ------------------------------
+// Arm a slot for pick-out (records pick_out_slot; the caller lights the
+// LED). cancel clears the marker. finish is called from the hardware
+// path when the armed reel is physically pulled: it removes the reel
+// from inventory and clears the marker. begin is a no-op for an empty
+// or non-inventoried slot.
+void begin_pick_out(int slot_num);
+void cancel_pick_out();
+void finish_pick_out(int slot_num);
+
+// Load/pick mutators (called from UI handlers).
 void mock_place_reel(int slot_num);  // commit load to that slot
 void mock_cancel_load();
-void mock_manual_pick(int slot_num);
 void mock_start_pick(int idx);
 void mock_raise_anomaly(AnomalyKind k);
 void mock_resolve_anomaly();

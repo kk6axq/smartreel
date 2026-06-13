@@ -5,16 +5,69 @@
 #include "ui/app_state.h"
 #include "ui/anomaly_modal.h"
 #include "ui/screen_manager.h"
+#include "ui/text_entry_modal.h"
 #include "storage/sdcard.h"
 #include "app/leds.h"
 #include "rs485/rs485.h"
 
 #include <esp32-hal-log.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 namespace ui::screens {
 
 using namespace theme;
+
+// ---- Live button/divider watch ------------------------------------
+// main.cpp routes raw module-word changes here (and pauses the anomaly
+// modal) while this screen is current. We decode the first changed bit
+// and show its physical position plus the logical slot the firmware
+// maps it to -- the bench tool for chasing the divider/slot bit-order
+// reversal. Each module word is  D0 S0 D1 S1 ... D15 S15  (D = even
+// bit 2k, S = odd bit 2k+1); each 8-channel 74HC165 holds 4 slots.
+static lv_obj_t* s_btn_status = nullptr;
+
+void selftest_on_input(uint8_t port, uint8_t module, uint32_t prev, uint32_t now) {
+    if (!s_btn_status) return;
+    const uint32_t changed = prev ^ now;
+    if (!changed) return;
+
+    // Report one bit; prefer a rising edge (a press) if several changed.
+    int bit = -1;
+    for (int b = 0; b < 32; ++b) {
+        if (!((changed >> b) & 1u)) continue;
+        bit = b;
+        if ((now >> b) & 1u) break;            // press wins over release
+    }
+    if (bit < 0) return;
+
+    const int  slot    = bit / 2;              // slot-in-module 0..15
+    const bool is_div  = (bit & 1) == 0;       // even bit = divider, odd = reel
+    const bool pressed = (now >> bit) & 1u;
+    const int  reg     = slot / 4;             // which 8-ch 74HC165 (0..3)
+    const int  lane    = slot % 4;             // lane within that register
+
+    int logical = 0;
+    const app::Slot* ls = app::slot_at_physical(port, module, slot);
+    if (ls) logical = ls->slot;
+
+    char buf[224];
+    snprintf(buf, sizeof(buf),
+        "%s %s\n"
+        "port %u  mod %u  slot %d\n"
+        "PISO %d  lane %d  (rev %d)\n"
+        "bit %d  -> logical %d",
+        is_div ? "DIVIDER" : "REEL", pressed ? "DOWN" : "up",
+        port, module, slot, reg, lane, 3 - lane, bit, logical);
+    lv_label_set_text(s_btn_status, buf);
+
+    // Mirror to serial so presses are captured even without eyes on the LCD.
+    log_i("selftest: %s %s port=%u mod=%u slot=%d PISO=%d lane=%d bit=%d -> logical=%d",
+          is_div ? "DIVIDER" : "REEL", pressed ? "down" : "up",
+          port, module, slot, reg, lane, bit, logical);
+}
+
+static void on_buttons_deleted(lv_event_t*) { s_btn_status = nullptr; }
 
 static void on_anom_removed(lv_event_t*) { ui::anomaly_modal_raise(app::AnomalyKind::Removed); }
 static void on_anom_added(lv_event_t*)   { ui::anomaly_modal_raise(app::AnomalyKind::Added); }
@@ -25,10 +78,27 @@ static void on_qr_scanner(lv_event_t*)   { ui::navigate(ui::Screen::QrScanner); 
 // Core PCB is attached the calls just time out; the UI doesn't block.
 static void on_leds_all_white(lv_event_t*) { leds::fill_all(0xFF, 0xFF, 0xFF); }
 static void on_leds_all_off(lv_event_t*)   { leds::clear_all(); }
-// "Single slot" lights slot 12 in theme blue. Once we have a real
-// text-input widget hooked up we'll read the slot # from the form;
-// for now this is a smoke test that the per-slot path works.
-static void on_leds_single(lv_event_t*)    { leds::light_slot(12, 0x25, 0x63, 0xEB); }
+// "Single slot" lights the chosen slot in theme blue. The slot number
+// is editable: tap the field to open the numeric entry modal.
+static int s_single_slot = 12;
+
+static void on_leds_single(lv_event_t*)     { leds::light_slot(s_single_slot, 0x25, 0x63, 0xEB); }
+static void on_leds_single_off(lv_event_t*) { leds::light_slot(s_single_slot, 0, 0, 0); }
+
+static void on_single_slot_saved(const char* v) {
+    if (v && v[0]) { int n = atoi(v); if (n >= 1) s_single_slot = n; }
+    ui::rebuild_current();
+}
+static void on_single_slot_tap(lv_event_t*) {
+    char buf[8]; snprintf(buf, sizeof(buf), "%d", s_single_slot);
+    ui::TextEntryOpts o = {};
+    o.title       = "Slot to light";
+    o.initial     = buf;
+    o.placeholder = "12";
+    o.max_len     = 4;
+    o.on_save     = on_single_slot_saved;
+    ui::text_entry_modal_open(o);
+}
 
 // RS485 chain ping: round-trip a PING to the Core. We just log the
 // result for now -- a full diag screen with per-chain stats is
@@ -106,12 +176,12 @@ static lv_obj_t* test_card(lv_obj_t* parent, const char* title, const char* desc
 
     lv_obj_t* h = lv_label_create(c);
     lv_label_set_text(h, title);
-    lv_obj_set_style_text_font(h, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(h, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(h, color::text(), 0);
 
     lv_obj_t* d = lv_label_create(c);
     lv_label_set_text(d, desc);
-    lv_obj_set_style_text_font(d, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(d, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(d, color::text_muted(), 0);
     lv_label_set_long_mode(d, LV_LABEL_LONG_DOT);   // 1 line, ellipsis
     lv_obj_set_width(d, LV_PCT(100));
@@ -121,7 +191,7 @@ static lv_obj_t* test_card(lv_obj_t* parent, const char* title, const char* desc
 static void status_line(lv_obj_t* card_obj, const char* text, lv_color_t col) {
     lv_obj_t* l = lv_label_create(card_obj);
     lv_label_set_text(l, text);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(l, col, 0);
     lv_label_set_long_mode(l, LV_LABEL_LONG_DOT);
     lv_obj_set_width(l, LV_PCT(100));
@@ -167,17 +237,25 @@ void build_config_selftest(lv_obj_t* body) {
         place(c, 0, 0);
     }
     {
-        lv_obj_t* c = test_card(sc, "Single slot", "Light slot 12");
+        lv_obj_t* c = test_card(sc, "Single slot", "Light one slot");
         lv_obj_t* br = btn_row(c);
-        form_input(br, "12", 0, true);
-        button(br, "Light", BtnKind::Default, on_leds_single);
-        status_line(c, "(input not yet editable)", color::text_muted());
+        char buf[8]; snprintf(buf, sizeof(buf), "%d", s_single_slot);
+        lv_obj_t* in = form_input(br, buf, 0, true);
+        lv_obj_add_flag(in, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(in, on_single_slot_tap, LV_EVENT_CLICKED, nullptr);
+        button(br, "Light", BtnKind::Primary, on_leds_single);
+        button(br, "Off",   BtnKind::Default, on_leds_single_off);
+        status_line(c, "Tap the number to change", color::text_muted());
         place(c, 1, 0);
     }
     {
-        lv_obj_t* c = test_card(sc, "Buttons", "Press any reel button");
-        button(c, "Watch", BtnKind::Default);
-        status_line(c, "Last: slot 7 reel", color::text_muted());
+        lv_obj_t* c = test_card(sc, "Buttons", "Press a reel / pull a divider");
+        s_btn_status = lv_label_create(c);
+        lv_label_set_text(s_btn_status, "Waiting for input...\n(modals paused here)");
+        lv_obj_set_style_text_font(s_btn_status, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_text_color(s_btn_status, color::text(), 0);
+        lv_obj_set_width(s_btn_status, LV_PCT(100));
+        lv_obj_add_event_cb(c, on_buttons_deleted, LV_EVENT_DELETE, nullptr);
         place(c, 2, 0);
     }
     {

@@ -63,14 +63,14 @@ static void show_progress_modal(const char* title) {
 
     lv_obj_t* t = lv_label_create(c);
     lv_label_set_text(t, title);
-    lv_obj_set_style_text_font(t, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(t, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(t, color::text(), 0);
 
     s_bar = progress_bar(c, 0);
 
     lv_obj_t* cap = lv_label_create(c);
     lv_label_set_text(cap, "Do not power off the device.");
-    lv_obj_set_style_text_font(cap, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(cap, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(cap, color::text_muted(), 0);
 }
 
@@ -164,7 +164,7 @@ static lv_obj_t* value_row(lv_obj_t* fc, const char* label, const char* desc,
     form_row_label(r, label, desc);
     lv_obj_t* l = lv_label_create(r);
     lv_label_set_text(l, value);
-    lv_obj_set_style_text_font(l, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(l, col, 0);
     return l;
 }

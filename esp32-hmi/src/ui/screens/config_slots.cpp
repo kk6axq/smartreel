@@ -1,8 +1,16 @@
-// CONFIG-SLOTS -- rack identity, RS485 chains, slot numbering.
+// CONFIG-SLOTS -- rack identity + live RS485 port topology and the
+// logical slot numbering derived from the modules actually present.
+//
+// The Core reports modules-per-port (sensed from the rail voltage); we
+// number every reel-slot contiguously, port-ascending, skipping empty
+// ports (see app::SlotMap). Data comes from the background-cached reel
+// info so building this screen never blocks the LVGL thread.
 #include "ui/screens/screens.h"
 #include "ui/widgets.h"
 #include "ui/theme.h"
 #include "ui/app_state.h"
+#include "app/slot_map.h"
+#include "rs485/rs485.h"
 
 #include <stdio.h>
 
@@ -11,7 +19,21 @@ namespace ui::screens {
 void build_config_slots(lv_obj_t* body) {
     lv_obj_t* sc = form_scroller(body);
 
-    // Rack identity
+    // ---- Pull the live topology and compute the numbering ----------
+    rs485::ReelInfo ri[rs485::N_PORTS];
+    int  n_ports = 0;
+    bool have    = rs485::cached_reel_info(ri, rs485::N_PORTS, &n_ports);
+
+    uint8_t counts[app::SlotMap::N_PORTS] = { 0 };
+    if (have) {
+        for (int i = 0; i < n_ports; ++i)
+            if (ri[i].port < app::SlotMap::N_PORTS)
+                counts[ri[i].port] = ri[i].module_count;
+    }
+    app::SlotMap map;
+    map.rebuild(counts);
+
+    // ---- Rack identity --------------------------------------------
     {
         lv_obj_t* fc = form_card(sc, "RACK IDENTITY");
 
@@ -26,41 +48,65 @@ void build_config_slots(lv_obj_t* body) {
         form_input(r, buf, 0, true);
     }
 
-    // RS485 chains
+    // ---- RS485 ports (live) ---------------------------------------
     {
-        lv_obj_t* fc = form_card(sc, "RS485 CHAINS");
-        for (int chain = 1; chain <= app::N_CHAINS; ++chain) {
-            int n_on_chain = app::SLOTS_PER_CHAIN;
-            int start_num = (chain - 1) * app::SLOTS_PER_CHAIN + 1;
+        char meta[24];
+        if (have) snprintf(meta, sizeof(meta), "%d slots present", map.total_slots);
+        else      snprintf(meta, sizeof(meta), "scanning...");
+        lv_obj_t* fc = form_card(sc, "RS485 PORTS");
 
+        for (int p = 0; p < app::SlotMap::N_PORTS; ++p) {
             lv_obj_t* r = form_row(fc);
-            char title[16]; snprintf(title, sizeof(title), "Chain %d", chain);
-            char desc[40];
-            snprintf(desc, sizeof(desc), "Auto-detected  %d slots downstream", n_on_chain);
+
+            char title[16];
+            snprintf(title, sizeof(title), "Port %d", p + 1);
+
+            char desc[48];
+            if (!have) {
+                snprintf(desc, sizeof(desc), "scanning...");
+            } else if (map.module_count[p] == 0) {
+                snprintf(desc, sizeof(desc), "empty  (sense %u mV)",
+                         p < n_ports ? ri[p].sense_mv : 0);
+            } else {
+                snprintf(desc, sizeof(desc), "%u module%s  -  %d slots",
+                         map.module_count[p], map.module_count[p] == 1 ? "" : "s",
+                         map.port_slots[p]);
+            }
             form_row_label(r, title, desc);
 
-            char sn[8]; snprintf(sn, sizeof(sn), "%d", start_num);
-            form_input(r, sn, 0, true);
-            char cn[8]; snprintf(cn, sizeof(cn), "%d", n_on_chain);
-            form_input(r, cn, 0, true);
-            button(r, "Re-scan", BtnKind::Default);
+            // Right column: the logical range this port occupies.
+            char range[16];
+            if (have && map.port_slots[p] > 0) {
+                snprintf(range, sizeof(range), "%d-%d",
+                         map.port_start[p],
+                         map.port_start[p] + map.port_slots[p] - 1);
+            } else {
+                snprintf(range, sizeof(range), "-");
+            }
+            form_input(r, range, 0, true);
         }
+
+        // Summary total.
+        lv_obj_t* rt = form_row(fc);
+        form_row_label(rt, "Total logical slots", meta);
+        char tot[8];
+        snprintf(tot, sizeof(tot), "%d", map.total_slots);
+        form_input(rt, tot, 0, true);
     }
 
-    // Numbering
+    // ---- Numbering ------------------------------------------------
     {
         lv_obj_t* fc = form_card(sc, "NUMBERING");
 
         lv_obj_t* r = form_row(fc);
-        form_row_label(r, "Direction", "Match the labels on the rack");
-        form_input(r, "Left-to-right, top-to-bottom", 240);
+        form_row_label(r, "Order", "Port ascending, module near to far, slot 0-15");
+        form_input(r, "Contiguous, present only", 240, true);
 
         r = form_row(fc);
         form_row_label(r, "Skip numbers", "Comma-separated slot numbers to omit");
         form_input(r, "(none)", 200);
 
         r = form_row(fc);
-        // empty left col
         lv_obj_t* spacer = lv_obj_create(r);
         lv_obj_remove_style_all(spacer);
         lv_obj_set_flex_grow(spacer, 1);

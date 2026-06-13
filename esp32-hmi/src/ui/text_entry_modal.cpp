@@ -82,7 +82,7 @@ void text_entry_modal_init() {
 
     g_title_lbl = lv_label_create(tbar);
     lv_label_set_text(g_title_lbl, "");
-    lv_obj_set_style_text_font(g_title_lbl, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(g_title_lbl, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(g_title_lbl, color::text(), 0);
     lv_obj_set_flex_grow(g_title_lbl, 1);
 
@@ -123,7 +123,7 @@ void text_entry_modal_init() {
     g_ta = lv_textarea_create(irow);
     lv_textarea_set_one_line(g_ta, true);
     lv_obj_set_flex_grow(g_ta, 1);
-    lv_obj_set_style_text_font(g_ta, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(g_ta, &lv_font_montserrat_24, 0);
     lv_obj_set_style_border_color(g_ta, color::border_strong(), 0);
     lv_obj_set_style_border_width(g_ta, 1, 0);
     lv_obj_set_style_radius(g_ta, layout::RADIUS, 0);

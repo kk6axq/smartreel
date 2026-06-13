@@ -302,6 +302,21 @@ bool cached_version(CoreVersion& out) {
     return s_cached_ver_valid;
 }
 
+// Background-cached per-port reel info (present-module topology),
+// refreshed by the POLL task so the UI can read it without blocking.
+static ReelInfo s_cached_reels[N_PORTS] = {};
+static int      s_cached_reels_n        = 0;
+static bool     s_cached_reels_valid    = false;
+
+bool cached_reel_info(ReelInfo* infos, int max_infos, int* n_out) {
+    if (!s_cached_reels_valid) return false;
+    int n = s_cached_reels_n;
+    if (n > max_infos) n = max_infos;
+    for (int i = 0; i < n; ++i) infos[i] = s_cached_reels[i];
+    if (n_out) *n_out = n;
+    return true;
+}
+
 static void poll_task(void* /*arg*/) {
     constexpr TickType_t period = pdMS_TO_TICKS(POLL_PERIOD_MS);
     TickType_t last = xTaskGetTickCount();
@@ -325,6 +340,17 @@ static void poll_task(void* /*arg*/) {
                 if (get_version(cv) == Status::Ok) {
                     s_cached_ver = cv;
                     s_cached_ver_valid = true;
+                }
+            }
+            // Refresh per-port reel topology on the first poll and then
+            // every ~1 s (module insert/remove is slow; this is plenty).
+            if (tick % 50 == 0) {
+                ReelInfo ri[N_PORTS];
+                int n = 0;
+                if (get_reel_info(REEL_ID_ALL, ri, N_PORTS, &n) == Status::Ok) {
+                    for (int i = 0; i < n; ++i) s_cached_reels[i] = ri[i];
+                    s_cached_reels_n = n;
+                    s_cached_reels_valid = true;
                 }
             }
             tick++;
@@ -442,43 +468,50 @@ Status get_reel_info(uint8_t reel_id, ReelInfo* infos, int max_infos, int* n_out
     Status s = transact(addr, MSG_GET_REEL_INFO, &reel_id, 1, buf, sizeof(buf), &n);
     if (s != Status::Ok) return s;
 
-    // Response layout: count (1B) + per-reel record(s):
-    //   reel_id (1B), present (1B), sense_mv (2B BE),
-    //   id_len (1B), id_bytes (id_len B)
+    // Response layout: count (1B) + per-port record(s), each 5 bytes:
+    //   port (1B), present (1B), sense_mv (2B BE), module_count (1B)
     if (n < 1) return Status::BadResponse;
     int count = buf[0];
     const uint8_t* p = &buf[1];
     int remaining = (int)n - 1;
     int written = 0;
     for (int i = 0; i < count && remaining >= 5 && written < max_infos; ++i) {
-        const uint8_t wire_id_len = p[4];
-        const int record_bytes = 5 + wire_id_len;
-        if (record_bytes > remaining) break;
-
         ReelInfo& r = infos[written];
-        // p[0] = reel_id echo; we expose the array index instead.
-        r.present  = (p[1] != 0);
-        r.sense_mv = ((uint16_t)p[2] << 8) | p[3];
-        uint8_t copy_len = wire_id_len;
-        if (copy_len > sizeof(r.id_bytes)) copy_len = sizeof(r.id_bytes);
-        memcpy(r.id_bytes, &p[5], copy_len);
-        r.id_len = copy_len;
+        r.port         = p[0];
+        r.present      = (p[1] != 0);
+        r.sense_mv     = ((uint16_t)p[2] << 8) | p[3];
+        r.module_count = p[4];
 
-        p         += record_bytes;
-        remaining -= record_bytes;
+        p         += 5;
+        remaining -= 5;
         written++;
     }
     if (n_out) *n_out = written;
     return Status::Ok;
 }
 
-Status read_inputs(uint8_t reel_id, uint8_t* out, size_t out_cap, size_t* out_len,
-                   uint8_t addr) {
-    if (!out || !out_cap) return Status::BufferTooSmall;
-    size_t n = 0;
-    Status s = transact(addr, MSG_READ_INPUTS, &reel_id, 1, out, out_cap, &n);
-    if (out_len) *out_len = n;
-    return s;
+Status read_inputs(uint8_t reel_id, uint32_t* inputs, int max_modules,
+                   int* n_modules, uint8_t addr) {
+    if (!inputs || max_modules <= 0) return Status::BufferTooSmall;
+    uint8_t buf[2 + MODULES_PER_PORT_MAX * INPUT_BYTES_PER_MODULE];
+    size_t  n = 0;
+    Status s = transact(addr, MSG_READ_INPUTS, &reel_id, 1, buf, sizeof(buf), &n);
+    if (s != Status::Ok) return s;
+
+    // Response: port (1B), module_count (1B), then module_count u32 BE words.
+    if (n < 2) return Status::BadResponse;
+    int mods = buf[1];
+    const uint8_t* p = &buf[2];
+    int avail = ((int)n - 2) / INPUT_BYTES_PER_MODULE;
+    if (mods > avail) mods = avail;
+    int written = 0;
+    for (int m = 0; m < mods && written < max_modules; ++m) {
+        inputs[written++] = ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) |
+                            ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
+        p += INPUT_BYTES_PER_MODULE;
+    }
+    if (n_modules) *n_modules = written;
+    return Status::Ok;
 }
 
 Status set_poll_rate(uint8_t reel_id, uint16_t rate_hz, uint8_t addr) {

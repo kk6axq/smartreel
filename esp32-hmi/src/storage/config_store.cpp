@@ -45,11 +45,10 @@ void load_defaults(Config& c) {
     c.behaviour.low_stock_threshold = 100;
     c.behaviour.scan_confirm        = true;
 
-    c.rack.n_chains        = app::N_CHAINS;
-    c.rack.slots_per_chain = app::SLOTS_PER_CHAIN;
-    copy_str(c.rack.numbering, sizeof(c.rack.numbering), "ltr-ttb");
-    c.rack.skip_count = 0;
     copy_str(c.rack.rack_name, sizeof(c.rack.rack_name), "Lab Rack A");
+    c.rack.committed = false;
+    memset(c.rack.module_count, 0, sizeof(c.rack.module_count));
+    c.rack.dividers.clear();
 }
 
 // ---- Parse / serialise --------------------------------------------
@@ -91,15 +90,20 @@ static bool parse_rack(const char* json, size_t len) {
     }
     auto& r = g_cfg.rack;
     copy_str(r.rack_name, sizeof(r.rack_name), str_or(doc["rack_name"], r.rack_name));
-    r.n_chains        = doc["n_chains"]        | r.n_chains;
-    r.slots_per_chain = doc["slots_per_chain"] | r.slots_per_chain;
-    copy_str(r.numbering, sizeof(r.numbering), str_or(doc["numbering"], r.numbering));
+    r.committed = doc["committed"] | r.committed;
 
-    auto skips = doc["skip"].as<JsonArrayConst>();
-    r.skip_count = 0;
-    for (JsonVariantConst v : skips) {
-        if (r.skip_count >= (int)(sizeof(r.skip_list)/sizeof(r.skip_list[0]))) break;
-        r.skip_list[r.skip_count++] = v.as<int>();
+    auto counts = doc["module_count"].as<JsonArrayConst>();
+    int ci = 0;
+    for (JsonVariantConst v : counts) {
+        if (ci >= app::SlotMap::N_PORTS) break;
+        r.module_count[ci++] = (uint8_t)(v.as<int>());
+    }
+
+    r.dividers.clear();
+    auto pulled = doc["pulled"].as<JsonArrayConst>();
+    for (JsonVariantConst v : pulled) {
+        r.dividers.set_pulled((uint8_t)(v["p"] | 0), (uint8_t)(v["m"] | 0),
+                              (uint8_t)(v["s"] | 0), true);
     }
     return true;
 }
@@ -189,12 +193,17 @@ bool save_rack() {
     }
     JsonDocument doc;
     auto& r = g_cfg.rack;
-    doc["rack_name"]       = r.rack_name;
-    doc["n_chains"]        = r.n_chains;
-    doc["slots_per_chain"] = r.slots_per_chain;
-    doc["numbering"]       = r.numbering;
-    auto sk = doc["skip"].to<JsonArray>();
-    for (int i = 0; i < r.skip_count; ++i) sk.add(r.skip_list[i]);
+    doc["rack_name"] = r.rack_name;
+    doc["committed"] = r.committed;
+    auto mc = doc["module_count"].to<JsonArray>();
+    for (int p = 0; p < app::SlotMap::N_PORTS; ++p) mc.add(r.module_count[p]);
+    auto pl = doc["pulled"].to<JsonArray>();
+    for (int i = 0; i < r.dividers.n_pulled; ++i) {
+        auto o = pl.add<JsonObject>();
+        o["p"] = r.dividers.pulled[i].port;
+        o["m"] = r.dividers.pulled[i].module;
+        o["s"] = r.dividers.pulled[i].slot;
+    }
 
     char buf[1024];
     size_t n = serializeJsonPretty(doc, buf, sizeof(buf));

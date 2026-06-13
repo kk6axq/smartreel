@@ -29,10 +29,10 @@ static void make_btn_base(lv_style_t* st) {
     lv_style_set_border_width(st, 1);
     lv_style_set_radius(st, layout::RADIUS);
     lv_style_set_text_color(st, color::text());
-    lv_style_set_text_font(st, &lv_font_montserrat_14);
+    lv_style_set_text_font(st, &lv_font_montserrat_28);
     lv_style_set_pad_hor(st, 16);
     lv_style_set_pad_ver(st, 8);
-    lv_style_set_min_height(st, 36);
+    lv_style_set_min_height(st, 58);   // fits 28pt label
 }
 
 static void make_dot(lv_style_t* st, lv_color_t c) {
@@ -52,7 +52,7 @@ void init() {
     lv_style_init(&g_s.screen_bg);
     lv_style_set_bg_color(&g_s.screen_bg, color::bg());
     lv_style_set_bg_opa(&g_s.screen_bg, LV_OPA_COVER);
-    lv_style_set_text_font(&g_s.screen_bg, &lv_font_montserrat_14);
+    lv_style_set_text_font(&g_s.screen_bg, &lv_font_montserrat_28);
     lv_style_set_text_color(&g_s.screen_bg, color::text());
     lv_style_set_pad_all(&g_s.screen_bg, 0);
     lv_style_set_border_width(&g_s.screen_bg, 0);
@@ -76,7 +76,7 @@ void init() {
     lv_style_set_border_width(&g_s.statusbar_back_btn, 1);
     lv_style_set_radius(&g_s.statusbar_back_btn, layout::RADIUS);
     lv_style_set_text_color(&g_s.statusbar_back_btn, color::text());
-    lv_style_set_text_font(&g_s.statusbar_back_btn, &lv_font_montserrat_18);
+    lv_style_set_text_font(&g_s.statusbar_back_btn, &lv_font_montserrat_28);
     lv_style_set_pad_all(&g_s.statusbar_back_btn, 0);
 
     lv_style_init(&g_s.statusbar_pill);
@@ -89,7 +89,7 @@ void init() {
     lv_style_set_pad_ver(&g_s.statusbar_pill, 3);
     lv_style_set_pad_gap(&g_s.statusbar_pill, 4);
     lv_style_set_text_color(&g_s.statusbar_pill, color::text_muted());
-    lv_style_set_text_font(&g_s.statusbar_pill, &lv_font_montserrat_12);
+    lv_style_set_text_font(&g_s.statusbar_pill, &lv_font_montserrat_24);
 
     lv_style_init(&g_s.statusbar_badge);
     lv_style_set_bg_color(&g_s.statusbar_badge, color::slot_error());
@@ -98,7 +98,7 @@ void init() {
     lv_style_set_pad_hor(&g_s.statusbar_badge, 7);
     lv_style_set_pad_ver(&g_s.statusbar_badge, 2);
     lv_style_set_text_color(&g_s.statusbar_badge, color::text_on_accent());
-    lv_style_set_text_font(&g_s.statusbar_badge, &lv_font_montserrat_12);
+    lv_style_set_text_font(&g_s.statusbar_badge, &lv_font_montserrat_24);
     lv_style_set_border_width(&g_s.statusbar_badge, 0);
 
     // Cards ----------------------------------------------------------
@@ -120,7 +120,7 @@ void init() {
     lv_style_set_pad_hor(&g_s.row, 10);
     lv_style_set_pad_ver(&g_s.row, 8);
     lv_style_set_pad_gap(&g_s.row, 10);
-    lv_style_set_min_height(&g_s.row, 44);
+    lv_style_set_min_height(&g_s.row, 80);   // fits 28pt + 24pt two-line
 
     auto stripe_color = [](lv_style_t* st, lv_color_t c) {
         lv_style_init(st);
@@ -166,7 +166,7 @@ void init() {
     lv_style_set_border_width(&g_s.row_btn, 0);
     lv_style_set_radius(&g_s.row_btn, layout::RADIUS);
     lv_style_set_text_color(&g_s.row_btn, color::text_on_accent());
-    lv_style_set_text_font(&g_s.row_btn, &lv_font_montserrat_12);
+    lv_style_set_text_font(&g_s.row_btn, &lv_font_montserrat_24);
     lv_style_set_pad_hor(&g_s.row_btn, 12);
     lv_style_set_pad_ver(&g_s.row_btn, 7);
 
@@ -188,7 +188,7 @@ void init() {
     lv_style_set_border_width(&g_s.input, 1);
     lv_style_set_radius(&g_s.input, layout::RADIUS);
     lv_style_set_text_color(&g_s.input, color::text());
-    lv_style_set_text_font(&g_s.input, &lv_font_montserrat_14);
+    lv_style_set_text_font(&g_s.input, &lv_font_montserrat_28);
     lv_style_set_pad_hor(&g_s.input, 8);
     lv_style_set_pad_ver(&g_s.input, 6);
 
@@ -215,7 +215,7 @@ void init() {
     lv_style_init(&g_s.form_card_head);
     lv_style_set_bg_opa(&g_s.form_card_head, LV_OPA_TRANSP);
     lv_style_set_text_color(&g_s.form_card_head, color::text_muted());
-    lv_style_set_text_font(&g_s.form_card_head, &lv_font_montserrat_12);
+    lv_style_set_text_font(&g_s.form_card_head, &lv_font_montserrat_24);
     lv_style_set_border_width(&g_s.form_card_head, 0);
     lv_style_set_pad_all(&g_s.form_card_head, 0);
 
@@ -257,7 +257,7 @@ void init() {
         lv_style_set_bg_color(st, bg);
         lv_style_set_bg_opa(st, LV_OPA_COVER);
         lv_style_set_text_color(st, color::text_on_accent());
-        lv_style_set_text_font(st, &lv_font_montserrat_14);
+        lv_style_set_text_font(st, &lv_font_montserrat_28);
         lv_style_set_pad_hor(st, 16);
         lv_style_set_pad_ver(st, 10);
         lv_style_set_pad_gap(st, 10);

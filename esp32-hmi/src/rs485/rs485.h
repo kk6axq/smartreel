@@ -87,22 +87,29 @@ enum class ResetReason : uint8_t {
 };
 Status reset_core(ResetReason reason = ResetReason::Normal, uint8_t addr = ADDR_CORE);
 
-// Reel I/O
+// Reel I/O. "reel_id" addresses a PORT (0..3); each port carries
+// `module_count` chained reel modules (sensed from the rail voltage).
 struct ReelInfo {
-    bool     present;
+    uint8_t  port;
+    bool     present;        // module_count > 0
     uint16_t sense_mv;
-    uint8_t  id_bytes[8];    // truncated if Core returns fewer
-    uint8_t  id_len;
+    uint8_t  module_count;   // chained modules on this port (0..4)
 };
-// reel_id = 0..3, or REEL_ID_ALL to fetch all in one call. When
+// reel_id = 0..3 (port), or REEL_ID_ALL to fetch all in one call. When
 // fetching all, fills `infos[0..N-1]` and writes the count to *n_out.
 Status get_reel_info(uint8_t reel_id, ReelInfo* infos, int max_infos, int* n_out,
                      uint8_t addr = ADDR_CORE);
 
-// Reads the PISO shift-register state (one or more bytes; Core
-// returns whatever its hardware gives).
-Status read_inputs(uint8_t reel_id, uint8_t* out, size_t out_cap, size_t* out_len,
-                   uint8_t addr = ADDR_CORE);
+// Per-port reel info cached by the background POLL task (refreshed ~1 Hz)
+// so the UI can read present-module topology without a blocking
+// transaction on the LVGL thread. Fills infos[0..min(N,max_infos)-1] in
+// port order (index == port). Returns false until the first refresh.
+bool cached_reel_info(ReelInfo* infos, int max_infos, int* n_out);
+
+// Reads a port's PISO inputs: one 32-bit word per chained module. Fills
+// `inputs[0..*n_modules-1]`; max_modules caps the array.
+Status read_inputs(uint8_t reel_id, uint32_t* inputs, int max_modules,
+                   int* n_modules, uint8_t addr = ADDR_CORE);
 
 Status set_poll_rate(uint8_t reel_id, uint16_t rate_hz, uint8_t addr = ADDR_CORE);
 

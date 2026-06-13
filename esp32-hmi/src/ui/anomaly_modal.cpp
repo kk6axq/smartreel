@@ -68,13 +68,13 @@ void anomaly_modal_init() {
     lv_obj_t* bang = lv_label_create(icon_circle);
     lv_label_set_text(bang, "!");
     lv_obj_set_style_text_color(bang, lv_color_white(), 0);
-    lv_obj_set_style_text_font(bang, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(bang, &lv_font_montserrat_28, 0);
     lv_obj_center(bang);
 
     g_title = lv_label_create(g_header);
     lv_label_set_text(g_title, "Anomaly");
     lv_obj_set_style_text_color(g_title, lv_color_white(), 0);
-    lv_obj_set_style_text_font(g_title, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(g_title, &lv_font_montserrat_28, 0);
     lv_obj_set_flex_grow(g_title, 1);
 
     // Body
@@ -89,7 +89,7 @@ void anomaly_modal_init() {
 
     g_msg = lv_label_create(g_body);
     lv_label_set_text(g_msg, "");
-    lv_obj_set_style_text_font(g_msg, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(g_msg, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(g_msg, color::text(), 0);
     lv_label_set_long_mode(g_msg, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(g_msg, LV_PCT(100));
@@ -163,12 +163,12 @@ static void render_from_state() {
         lv_obj_t* k = lv_label_create(row);
         lv_label_set_text(k, a.detail[i].k);
         lv_obj_set_style_text_color(k, color::text_muted(), 0);
-        lv_obj_set_style_text_font(k, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(k, &lv_font_montserrat_24, 0);
 
         lv_obj_t* v = lv_label_create(row);
         lv_label_set_text(v, a.detail[i].v);
         lv_obj_set_style_text_color(v, color::text(), 0);
-        lv_obj_set_style_text_font(v, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(v, &lv_font_montserrat_24, 0);
     }
 }
 

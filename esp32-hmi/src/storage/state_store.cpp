@@ -37,47 +37,29 @@ static int            s_pend_count  = 0;
 const Stats& stats() { return s_stats; }
 
 // ===================================================================
-//  Slot-state <-> JSON
+//  (Slot occupancy is live/derived; only part/qty contents are persisted,
+//   keyed by logical slot number -- see write/load_state_json.)
 // ===================================================================
-static const char* slot_state_str(app::SlotState s) {
-    switch (s) {
-        case app::SlotState::EMPTY:    return "empty";
-        case app::SlotState::OCCUPIED: return "occupied";
-        case app::SlotState::ERROR:    return "error";
-        // Transient runtime states are not persisted; they collapse
-        // to whatever their underlying physical reality is.
-        case app::SlotState::TARGET:   return "occupied";
-        case app::SlotState::PICKED:   return "occupied";
-        case app::SlotState::WARN:     return "occupied";
-    }
-    return "empty";
-}
-
-static app::SlotState slot_state_from(const char* s) {
-    if (!s) return app::SlotState::EMPTY;
-    if (strcmp(s, "occupied") == 0) return app::SlotState::OCCUPIED;
-    if (strcmp(s, "error")    == 0) return app::SlotState::ERROR;
-    return app::SlotState::EMPTY;
-}
 
 // ===================================================================
 //  Save helpers (run on the writer task, given a snapshot)
 // ===================================================================
 static bool write_state_json(const app::State& s) {
     JsonDocument doc;
-    doc["version"] = 1;
+    doc["version"] = 2;
+    // Rack contents keyed by LOGICAL slot number (presence is live, so we
+    // persist only the part/qty assignment for occupied logical slots).
     auto rack = doc["rack"].to<JsonArray>();
-    for (int i = 0; i < app::N_SLOTS; ++i) {
+    for (int i = 0; i < s.n_rack; ++i) {
         const auto& slot = s.rack[i];
+        if (!slot.part.valid) continue;
         auto o = rack.add<JsonObject>();
-        o["state"] = slot_state_str(slot.state);
-        if (slot.part.valid) {
-            o["part_id"] = slot.part.id;
-            o["name"]    = slot.part.name;
-            o["pkg"]     = slot.part.pkg;
-            o["mfg"]     = slot.part.mfg;
-            o["qty"]     = slot.qty;
-        }
+        o["num"]     = slot.slot;
+        o["part_id"] = slot.part.id;
+        o["name"]    = slot.part.name;
+        o["pkg"]     = slot.part.pkg;
+        o["mfg"]     = slot.part.mfg;
+        o["qty"]     = slot.qty;
     }
     // Worst case ~9 KB. Use a heap buffer so the writer stack stays small.
     static constexpr size_t BUF_SZ = 12 * 1024;
@@ -130,8 +112,12 @@ static bool write_jobs_json(const app::State& s) {
 // Append any pending lines to anomalies.jsonl in one open/close.
 static bool append_pending_anomalies() {
     if (!sdcard::mounted()) return false;
-    // Snapshot under mutex
-    char  local[PEND_MAX][PEND_LINE_LEN];
+    // Snapshot under mutex. `local` is static (not on the stack): at
+    // ~3.8 KB it would otherwise blow the writer task's stack when this
+    // runs in the same iteration as a state/jobs write (the combined
+    // FATFS call depth tripped the stack canary). Safe to be static --
+    // only the single writer task ever calls this.
+    static char local[PEND_MAX][PEND_LINE_LEN];
     int   n = 0;
     xSemaphoreTake(s_pending_mtx, portMAX_DELAY);
     n = s_pend_count;
@@ -211,7 +197,7 @@ bool start_writer() {
 
     BaseType_t ok = xTaskCreatePinnedToCore(
         writer_task, "state-writer",
-        6 * 1024, nullptr,
+        8 * 1024, nullptr,          // FATFS write depth + JSON; headroom
         /*priority=*/1, &s_writer_task,
         PRO_CPU_NUM);
     return ok == pdPASS;
@@ -293,86 +279,48 @@ static bool load_state_json(app::State& s) {
         log_w("state.json parse failed: %s", err.c_str());
         return false;
     }
+    // Contents are keyed by logical number and applied onto the already-
+    // built dynamic rack (rebuild_rack() must have run first). A saved
+    // number with no matching present slot is simply ignored.
     JsonArrayConst rack = doc["rack"].as<JsonArrayConst>();
-    int i = 0;
+    int applied = 0;
     for (JsonObjectConst o : rack) {
-        if (i >= app::N_SLOTS) break;
-        auto& slot = s.rack[i++];
-        slot.state = slot_state_from(o["state"] | "empty");
-        if (o["part_id"].is<const char*>()) {
-            slot.part.valid = true;
-            snprintf(slot.part.id,   sizeof(slot.part.id),   "%s",
-                     o["part_id"].as<const char*>());
-            snprintf(slot.part.name, sizeof(slot.part.name), "%s",
-                     o["name"]    | "");
-            snprintf(slot.part.pkg,  sizeof(slot.part.pkg),  "%s",
-                     o["pkg"]     | "");
-            snprintf(slot.part.mfg,  sizeof(slot.part.mfg),  "%s",
-                     o["mfg"]     | "");
-            slot.qty = o["qty"] | 0;
-        } else {
-            slot.part.valid = false;
-            slot.qty = 0;
-        }
+        if (!o["part_id"].is<const char*>()) continue;
+        int num = o["num"] | 0;
+        app::Slot* slot = app::slot_by_num(num);
+        if (!slot) continue;
+        slot->part.valid = true;
+        snprintf(slot->part.id,   sizeof(slot->part.id),   "%s", o["part_id"].as<const char*>());
+        snprintf(slot->part.name, sizeof(slot->part.name), "%s", o["name"] | "");
+        snprintf(slot->part.pkg,  sizeof(slot->part.pkg),  "%s", o["pkg"]  | "");
+        snprintf(slot->part.mfg,  sizeof(slot->part.mfg),  "%s", o["mfg"]  | "");
+        slot->qty = o["qty"] | 0;
+        if (slot->state == app::SlotState::EMPTY) slot->state = app::SlotState::OCCUPIED;
+        applied++;
     }
-    log_i("state.json loaded (%d slots)", i);
+    log_i("state.json loaded (%d slot contents)", applied);
     return true;
 }
 
-static bool load_jobs_json(app::State& s) {
-    if (!sdcard::mounted()) return false;
-    size_t fsz = sdcard::file_size(PATH_JOBS);
-    if (fsz == 0 || fsz > 16 * 1024) return false;
-
-    char* buf = static_cast<char*>(heap_caps_malloc(fsz + 1, MALLOC_CAP_8BIT));
-    if (!buf) return false;
-    size_t got = sdcard::read_file(PATH_JOBS, buf, fsz);
-    buf[got] = 0;
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, buf, got);
-    heap_caps_free(buf);
-    if (err) {
-        log_w("jobs.json parse failed: %s", err.c_str());
-        return false;
-    }
-    s.active_pick_idx = doc["active"] | -1;
-    JsonArrayConst queue = doc["queue"].as<JsonArrayConst>();
-    int qi = 0;
-    for (JsonObjectConst jo : queue) {
-        if (qi >= app::MAX_PICK_JOBS) break;
-        auto& j = s.pick_jobs[qi++];
-        snprintf(j.id,        sizeof(j.id),        "%s", jo["id"]        | "");
-        snprintf(j.name,      sizeof(j.name),      "%s", jo["name"]      | "");
-        snprintf(j.requested, sizeof(j.requested), "%s", jo["requested"] | "");
-        JsonArrayConst items = jo["items"].as<JsonArrayConst>();
-        j.n_items = 0;
-        for (JsonObjectConst io : items) {
-            if (j.n_items >= (int)(sizeof(j.items) / sizeof(j.items[0]))) break;
-            auto& it = j.items[j.n_items++];
-            snprintf(it.part_id, sizeof(it.part_id), "%s", io["part_id"] | "");
-            it.qty      = io["qty"]    | 0;
-            it.slot_num = io["slot"]   | 0;
-            it.picked   = io["picked"] | false;
-            it.part_name[0] = 0;
-        }
-    }
-    s.n_pick_jobs = qi;
-    log_i("jobs.json loaded (%d jobs)", qi);
-    return true;
-}
+// NOTE: jobs.json is write-only now. Pick jobs are live from InvenTree
+// (GET /pickjobs via inv_sync); the on-disk copy is kept only as a
+// debugging/forensic snapshot and is never read back into app_state
+// (doing so resurrected stale placeholder jobs). See load().
 
 bool load() {
     if (!sdcard::mounted()) {
         log_i("state_store: no SD; mock data retained");
         return false;
     }
-    // Mutate app::state() under the lock; both loaders are best-effort.
+    // Mutate app::state() under the lock. Slot contents are restored from
+    // SD; pick jobs are NOT — they're live from InvenTree (GET /pickjobs
+    // via inv_sync). Reloading jobs.json here resurrected stale placeholder
+    // jobs (and a stale active_pick_idx that blocked the live refresh), so
+    // the jobs cache is intentionally not read back.
     app::lock();
     bool a = load_state_json(app::state());
-    bool b = load_jobs_json(app::state());
     app::unlock();
-    return a || b;
+    return a;
 }
 
 } // namespace state_store

@@ -37,4 +37,11 @@ rs485::Status fill_all(uint8_t r, uint8_t g, uint8_t b);
 // Turn off every LED on every reel.
 rs485::Status clear_all();
 
+// Boot self-test: chase a single lit pixel down the line through every
+// connected reel module (port by port, pixel by pixel), then turn all
+// LEDs off. Blocking (uses delay); call from the main/setup thread
+// before the LVGL task starts, after the reel topology is known.
+// No-ops harmlessly when no Core/modules are present.
+void boot_chase();
+
 } // namespace leds

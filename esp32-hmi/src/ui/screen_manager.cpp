@@ -34,9 +34,10 @@ static const char* title_for(Screen s) {
         case Screen::Home:           return "Reel Rack";
         case Screen::Load:           return "Load";
         case Screen::View:           return "Inventory";
+        case Screen::RackGrid:       return "Rack";
         case Screen::PickList:       return "Pick Jobs";
         case Screen::PickActive:     return "Picking";
-        case Screen::Configure:      return "Configure";
+        case Screen::Configure:      return "Settings";
         case Screen::ConfigSlots:    return "Slot Configuration";
         case Screen::ConfigNetwork:  return "Network";
         case Screen::ConfigSelftest: return "Self Test";
@@ -52,6 +53,7 @@ static void build_into(Screen s, lv_obj_t* body) {
         case Screen::Home:           screens::build_home(body);            break;
         case Screen::Load:           screens::build_load(body);            break;
         case Screen::View:           screens::build_view(body);            break;
+        case Screen::RackGrid:       screens::build_rack_grid(body);       break;
         case Screen::PickList:       screens::build_pick_list(body);       break;
         case Screen::PickActive:     screens::build_pick_active(body);     break;
         case Screen::Configure:      screens::build_configure(body);       break;
@@ -82,7 +84,12 @@ static lv_obj_t* make_body() {
 // cached snapshot.
 static bool always_dirty(Screen s) {
     return s == Screen::ConfigNetwork
-        || s == Screen::PickActive;
+        || s == Screen::PickActive
+        || s == Screen::PickList     // re-fetches jobs from InvenTree
+        || s == Screen::RackGrid     // live occupancy
+        || s == Screen::View         // reconcile may change contents
+        || s == Screen::Home         // rack-count tile, fresh load entry
+        || s == Screen::Load;        // always start on a fresh scan
 }
 
 static void show(Screen s) {
@@ -157,6 +164,13 @@ void go_back() {
 void rebuild_current() {
     int idx = (int)g_current;
     if (idx >= 0 && idx < (int)Screen::Count) g_dirty[idx] = true;
+    show(g_current);
+}
+
+// Flag every cached screen for rebuild (e.g. after a reel topology /
+// divider change) and refresh the one on screen right now.
+void mark_all_dirty() {
+    for (int i = 0; i < (int)Screen::Count; ++i) g_dirty[i] = true;
     show(g_current);
 }
 

@@ -83,8 +83,64 @@ struct SlotMutResult {
     Status status;
     int    http_code;
     char   error[96];
-    int    remaining_qty;  // POST /slots/n/pick fills this; else 0
-    int    picked_qty;     // POST /slots/n/pick fills this; else 0
+    int    stock_id;       // /pick and /clear fill these; else 0
+    int    moved_to;
+};
+
+// One slot from GET /rack. Slimmed to what the HMI consumes.
+struct RackSlot {
+    uint16_t slot;          // physical anchor position, 1..N
+    bool     occupied;      // stock != null server-side
+    int      stock_id;
+    int      qty;
+    Part     part;
+};
+
+// Heap-allocate this (e.g. `new RackResult()`): with MAX_SLOTS entries
+// it's far too large for a worker-task stack.
+struct RackResult {
+    static constexpr int MAX_SLOTS = 256;
+    Status   status;
+    int      http_code;
+    char     error[96];
+    int      location_id;
+    int      n_slots;
+    int      pickjobs_available;
+    RackSlot slots[MAX_SLOTS];
+};
+
+// GET /pickjobs. Mirrors app::PickJob capacities.
+struct PickJobItem {
+    char part_id[24];
+    char part_name[40];
+    int  qty;
+    bool picked;
+};
+
+struct PickJobInfo {
+    char        id[12];          // "BO-0042"
+    char        name[64];
+    char        requested[24];   // ISO timestamp (UI trims for display)
+    char        job_status[10];  // pending | partial | done
+    PickJobItem items[16];
+    int         n_items;
+};
+
+struct PickJobsResult {
+    static constexpr int MAX_JOBS = 8;
+    Status      status;
+    int         http_code;
+    char        error[96];
+    PickJobInfo jobs[MAX_JOBS];
+    int         n_jobs;
+};
+
+struct JobPickResult {
+    Status status;
+    int    http_code;
+    char   error[96];
+    bool   item_picked;
+    char   job_status[10];
 };
 
 // ---- Setup ----------------------------------------------------------
@@ -114,8 +170,19 @@ uint32_t            last_success_ms();  // millis() of last 2xx, or 0
 HealthResult  health();
 ResolveResult resolve_barcode(const char* code, const char* op_id);
 SlotMutResult assign_slot   (int slot_num, int stock_item_id, const char* op_id);
-SlotMutResult pick_slot     (int slot_num, int qty,           const char* op_id);
+// Whole-reel pick (docs/hmi-plugin-api.md): transfers the slot's
+// StockItem to the server-configured staging location. No qty.
+SlotMutResult pick_slot     (int slot_num, const char* op_id);
 SlotMutResult clear_slot    (int slot_num, const char* reason,const char* op_id);
-SlotMutResult report_anomaly(const char* kind, int slot_num,  const char* op_id);
+SlotMutResult report_anomaly(const char* kind, int slot_num,
+                             const char* detail, const char* op_id);
+// POST /rack/register: ensure slot sub-locations 1..n_slots exist.
+SlotMutResult register_rack (int n_slots, const char* op_id);
+
+// Caller heap-allocates `out` (see RackResult comment) and zeroes it.
+void get_rack    (RackResult& out);
+void get_pickjobs(PickJobsResult& out);
+JobPickResult pick_job_item(const char* job_id, int item_idx,
+                            int slot_num, const char* op_id);
 
 } // namespace inv_api

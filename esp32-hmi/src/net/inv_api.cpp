@@ -366,8 +366,8 @@ static SlotMutResult slot_mut_call(const char* path, const char* body_buf) {
 
     JsonDocument doc;
     if (deserializeJson(doc, body) == DeserializationError::Ok) {
-        r.remaining_qty = doc["remaining_qty"] | 0;
-        r.picked_qty    = doc["picked_qty"]    | 0;
+        r.stock_id = doc["stock_id"] | 0;
+        r.moved_to = doc["moved_to"] | 0;
     }
     capture_success();
     return r;
@@ -385,11 +385,10 @@ SlotMutResult assign_slot(int slot_num, int stock_item_id, const char* op_id) {
     return slot_mut_call(path, body);
 }
 
-SlotMutResult pick_slot(int slot_num, int qty, const char* op_id) {
+SlotMutResult pick_slot(int slot_num, const char* op_id) {
     char path[40], body[64];
     snprintf(path, sizeof(path), "rack/slots/%d/pick", slot_num);
     JsonDocument req;
-    req["qty"]   = qty;
     req["op_id"] = op_id ? op_id : "";
     serializeJson(req, body, sizeof(body));
     return slot_mut_call(path, body);
@@ -405,14 +404,173 @@ SlotMutResult clear_slot(int slot_num, const char* reason, const char* op_id) {
     return slot_mut_call(path, body);
 }
 
-SlotMutResult report_anomaly(const char* kind, int slot_num, const char* op_id) {
-    char body[96];
+SlotMutResult report_anomaly(const char* kind, int slot_num,
+                             const char* detail, const char* op_id) {
+    char body[256];
     JsonDocument req;
     req["kind"]     = kind ? kind : "removed";
     req["slot_num"] = slot_num;
+    if (detail && detail[0]) req["detail"] = detail;
     req["op_id"]    = op_id ? op_id : "";
     serializeJson(req, body, sizeof(body));
     return slot_mut_call("anomaly", body);
+}
+
+SlotMutResult register_rack(int n_slots, const char* op_id) {
+    char body[64];
+    JsonDocument req;
+    req["n_slots"] = n_slots;
+    req["op_id"]   = op_id ? op_id : "";
+    serializeJson(req, body, sizeof(body));
+    return slot_mut_call("rack/register", body);
+}
+
+// ---- GET /rack -------------------------------------------------------
+
+void get_rack(RackResult& out) {
+    out.status = Status::NotConfigured;
+    out.n_slots = 0;
+    if (wifi_mgr::status() != wifi_mgr::State::Connected) {
+        out.status = Status::NoWifi;
+        snprintf(out.error, sizeof(out.error), "wifi not connected");
+        return;
+    }
+    if (url_error(out.error, sizeof(out.error))) return;
+
+    char url[160];
+    if (!build_url(url, sizeof(url), "rack")) {
+        snprintf(out.error, sizeof(out.error), "URL too long");
+        return;
+    }
+
+    String body;
+    int code = do_request("GET", url, nullptr, body);
+    classify(code, body, out.status, out.http_code, out.error, sizeof(out.error));
+    if (out.status != Status::Ok) return;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body) != DeserializationError::Ok) {
+        out.status = Status::ParseError;
+        snprintf(out.error, sizeof(out.error), "bad rack json");
+        return;
+    }
+    out.location_id         = doc["location_id"] | 0;
+    out.pickjobs_available  = doc["pickjobs_available"] | 0;
+
+    for (JsonObjectConst s : doc["slots"].as<JsonArrayConst>()) {
+        if (out.n_slots >= RackResult::MAX_SLOTS) break;
+        RackSlot& rs = out.slots[out.n_slots++];
+        rs.slot = s["slot"] | 0;
+        JsonObjectConst stock = s["stock"].as<JsonObjectConst>();
+        rs.occupied = !stock.isNull();
+        if (rs.occupied) {
+            rs.stock_id = stock["id"]  | 0;
+            rs.qty      = stock["qty"] | 0;
+            load_part(rs.part, stock["part"].as<JsonObjectConst>());
+        } else {
+            rs.stock_id = 0;
+            rs.qty      = 0;
+            rs.part     = Part{};
+        }
+    }
+    capture_success();
+}
+
+// ---- GET /pickjobs ----------------------------------------------------
+
+void get_pickjobs(PickJobsResult& out) {
+    out.status = Status::NotConfigured;
+    out.n_jobs = 0;
+    if (wifi_mgr::status() != wifi_mgr::State::Connected) {
+        out.status = Status::NoWifi;
+        snprintf(out.error, sizeof(out.error), "wifi not connected");
+        return;
+    }
+    if (url_error(out.error, sizeof(out.error))) return;
+
+    char url[160];
+    if (!build_url(url, sizeof(url), "pickjobs")) {
+        snprintf(out.error, sizeof(out.error), "URL too long");
+        return;
+    }
+
+    String body;
+    int code = do_request("GET", url, nullptr, body);
+    classify(code, body, out.status, out.http_code, out.error, sizeof(out.error));
+    if (out.status != Status::Ok) return;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body) != DeserializationError::Ok) {
+        out.status = Status::ParseError;
+        snprintf(out.error, sizeof(out.error), "bad pickjobs json");
+        return;
+    }
+
+    for (JsonObjectConst j : doc["jobs"].as<JsonArrayConst>()) {
+        if (out.n_jobs >= PickJobsResult::MAX_JOBS) break;
+        PickJobInfo& job = out.jobs[out.n_jobs++];
+        snprintf(job.id,         sizeof(job.id),         "%s", j["id"]           | "");
+        snprintf(job.name,       sizeof(job.name),       "%s", j["name"]         | "");
+        snprintf(job.requested,  sizeof(job.requested),  "%s", j["requested_at"] | "");
+        snprintf(job.job_status, sizeof(job.job_status), "%s", j["status"]       | "");
+        job.n_items = 0;
+        for (JsonObjectConst it : j["items"].as<JsonArrayConst>()) {
+            if (job.n_items >= (int)(sizeof(job.items) / sizeof(job.items[0]))) break;
+            PickJobItem& item = job.items[job.n_items++];
+            snprintf(item.part_id,   sizeof(item.part_id),   "%s", it["part_id"]   | "");
+            snprintf(item.part_name, sizeof(item.part_name), "%s", it["part_name"] | "");
+            item.qty    = it["qty"]    | 0;
+            item.picked = it["picked"] | false;
+        }
+    }
+    capture_success();
+}
+
+// ---- POST /pickjobs/{id}/items/{idx}/pick ------------------------------
+
+JobPickResult pick_job_item(const char* job_id, int item_idx,
+                            int slot_num, const char* op_id) {
+    JobPickResult r{};
+    r.status = Status::NotConfigured;
+    if (!job_id || !job_id[0]) {
+        snprintf(r.error, sizeof(r.error), "empty job id");
+        return r;
+    }
+    if (wifi_mgr::status() != wifi_mgr::State::Connected) {
+        r.status = Status::NoWifi;
+        snprintf(r.error, sizeof(r.error), "wifi not connected");
+        return r;
+    }
+    if (url_error(r.error, sizeof(r.error))) return r;
+
+    char tail[64];
+    snprintf(tail, sizeof(tail), "pickjobs/%s/items/%d/pick", job_id, item_idx);
+    char url[200];
+    if (!build_url(url, sizeof(url), tail)) {
+        snprintf(r.error, sizeof(r.error), "URL too long");
+        return r;
+    }
+
+    char body_buf[96];
+    {
+        JsonDocument req;
+        req["slot_num"] = slot_num;
+        req["op_id"]    = op_id ? op_id : "";
+        serializeJson(req, body_buf, sizeof(body_buf));
+    }
+
+    String body;
+    int code = do_request("POST", url, body_buf, body);
+    classify(code, body, r.status, r.http_code, r.error, sizeof(r.error));
+    if (r.status != Status::Ok) return r;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body) == DeserializationError::Ok) {
+        r.item_picked = doc["item"]["picked"] | false;
+        snprintf(r.job_status, sizeof(r.job_status), "%s", doc["job_status"] | "");
+    }
+    capture_success();
+    return r;
 }
 
 } // namespace inv_api

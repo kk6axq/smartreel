@@ -124,4 +124,43 @@ static constexpr uint8_t REEL_ID_ALL = 0xFF;
 //   count : 1 byte
 //   seqs  : count bytes -- the event SEQs the ESP32 has handled
 
+// ---- Reel topology on the wire ------------------------------------
+//
+// "reel_id" addresses a PORT (0..N_PORTS-1), or REEL_ID_ALL for all.
+// Each port carries 1..MODULES_PER_PORT_MAX chained reel modules; a
+// module has 32 input bits (16 dividers interleaved with 16 slots:
+// D0 S0 D1 S1 ... D15 S15). Inputs are therefore variable-length per
+// port -- one 32-bit word per module.
+static constexpr uint8_t  N_PORTS               = 4;
+static constexpr uint8_t  MODULE_INPUT_BITS      = 32;
+static constexpr uint8_t  MODULES_PER_PORT_MAX   = 4;
+static constexpr uint8_t  MODULE_LEDS            = 16;   // also reel-slots per module
+static constexpr uint8_t  MODULE_SLOTS           = 16;
+static constexpr uint16_t PIXELS_PER_PORT_MAX    = MODULE_LEDS * MODULES_PER_PORT_MAX;
+static constexpr uint8_t  INPUT_BYTES_PER_MODULE = MODULE_INPUT_BITS / 8;  // 4
+//
+// GET_REEL_INFO response payload:
+//   count : 1 byte
+//   per port record (count copies):
+//       port         : 1 byte
+//       present      : 1 byte  (module_count > 0)
+//       sense_mv     : 2 bytes BE
+//       module_count : 1 byte
+//
+// READ_INPUTS(port) response payload:
+//   port         : 1 byte
+//   module_count : 1 byte
+//   per module (module_count copies): 4 bytes BE -- the 32-bit input word
+//
+// EVT_INPUT_CHANGE data:
+//   port (1) , module_index (1) , prev32 (4 BE) , new32 (4 BE) , ts_ms (4 BE)
+// EVT_REEL_INSERTED data:
+//   port (1) , module_count (1) , sense_mv (2 BE)
+// EVT_REEL_REMOVED data:
+//   port (1) , module_count (1)   -- new (lower) count, 0 if port now empty
+// EVT_SENSE_THRESHOLD data:
+//   port (1) , sense_mv (2 BE) , threshold_id (1)
+// EVT_LOG data:
+//   level (1) , ASCII message (no nul terminator required)
+
 } // namespace rs485

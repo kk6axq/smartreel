@@ -1,14 +1,20 @@
 // VIEW -- full inventory list of occupied slots.
 //
-// Each row has a "Find" button that lights the slot's LED in theme
-// blue for 3 seconds via an lv_timer one-shot. Useful when you
-// know what you're looking for and need the rack to tell you which
-// physical slot it lives in.
+// Each row has:
+//   * "Find"  -- lights the slot's LED in theme blue for 3 s so you can
+//                spot the physical slot.
+//   * "Pick"  -- arms a pick-out: lights the slot and waits for you to
+//                physically pull that reel. The reel-presence switch
+//                releasing is the confirmation -- main.cpp's
+//                apply_slot_change() then removes it from inventory and
+//                drops the light. While armed the button reads "Cancel",
+//                which turns the light off and aborts without removing.
 #include "ui/screens/screens.h"
 #include "ui/screen_manager.h"
 #include "ui/widgets.h"
 #include "ui/app_state.h"
 #include "app/leds.h"
+#include "app/inv_sync.h"
 
 #include <stdio.h>
 
@@ -42,11 +48,50 @@ static void free_find_ctx(lv_event_t* e) {
     delete static_cast<FindCtx*>(lv_event_get_user_data(e));
 }
 
+// ---- Pick out (take a reel out of inventory) ----------------------
+// Arming is a UI action; the *confirmation* is physical. Pressing Pick
+// lights the slot and records it as the pending pick-out. When the reel
+// is actually pulled, the hardware presence change reaches
+// apply_slot_change(), which removes it from inventory. Cancel just
+// drops the light and clears the pending marker.
+struct SlotCtx { int slot_num; };
+
+static void on_pick(lv_event_t* e) {
+    auto* c = static_cast<SlotCtx*>(lv_event_get_user_data(e));
+    if (!c) return;
+    if (!inv_sync::online()) return;   // picking is online-only (user stories)
+    // Re-arming onto a different slot: drop the previously lit one.
+    const int prev = app::state().pick_out_slot;
+    if (prev > 0 && prev != c->slot_num) leds::light_slot(prev, 0, 0, 0);
+    app::begin_pick_out(c->slot_num);
+    leds::light_slot(c->slot_num, 0x25, 0x63, 0xEB);   // theme blue
+    ui::rebuild_current();
+}
+static void on_pick_cancel(lv_event_t* e) {
+    auto* c = static_cast<SlotCtx*>(lv_event_get_user_data(e));
+    if (!c) return;
+    leds::light_slot(c->slot_num, 0, 0, 0);
+    app::cancel_pick_out();
+    ui::rebuild_current();
+}
+static void free_slot_ctx(lv_event_t* e) {
+    delete static_cast<SlotCtx*>(lv_event_get_user_data(e));
+}
+
 void build_view(lv_obj_t* body) {
     lv_obj_t* sc = row_scroller(body);
 
+    const bool online = inv_sync::online();
+    if (!online) {
+        banner(sc, "InvenTree is unreachable - Find works, but picking is "
+                   "disabled until the connection comes back.",
+               /*warn=*/true);
+    }
+
     int n_shown = 0;
-    for (auto& s : app::state().rack) {
+    app::State& st = app::state();
+    for (int i = 0; i < st.n_rack; ++i) {
+        const app::Slot& s = st.rack[i];
         if (s.state != app::SlotState::OCCUPIED) continue;
         if (!s.part.valid) continue;
         n_shown++;
@@ -67,6 +112,18 @@ void build_view(lv_obj_t* body) {
         auto* ctx = new FindCtx{ s.slot };
         lv_obj_t* btn = row_add_button(row, "Find", on_find, ctx);
         lv_obj_add_event_cb(btn, free_find_ctx, LV_EVENT_DELETE, ctx);
+
+        // Pick toggles to Cancel while this slot is the armed pick-out.
+        // Disabled offline: a pick the server never hears about would
+        // desync the rack (cancel stays enabled to back out).
+        const bool armed = (st.pick_out_slot == s.slot);
+        auto* pctx = new SlotCtx{ s.slot };
+        lv_obj_t* pbtn = row_add_button(row, armed ? "Cancel" : "Pick",
+                                        armed ? on_pick_cancel : on_pick, pctx,
+                                        /*muted=*/!armed,
+                                        /*success=*/false,
+                                        /*disabled=*/!armed && !online);
+        lv_obj_add_event_cb(pbtn, free_slot_ctx, LV_EVENT_DELETE, pctx);
     }
 
     if (n_shown == 0) {

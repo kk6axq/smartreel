@@ -43,8 +43,6 @@ flash_rp2040() {
 # --- ESP32: build, drop into download mode, esptool upload (with retry) ------
 flash_esp32() {
     local dir="$REPO/$1"
-    echo "== build $1 =="
-    ( cd "$dir" && pio run ) || die "build failed"
 
     # If the app is running it has a 'dl' command; use it to enter ROM
     # download mode. If it's already in download mode this is a no-op.
@@ -58,8 +56,14 @@ flash_esp32() {
     port="$($CTL find hmi)"
     [ -n "$port" ] || die "ESP32 (VID 303a) not found"
 
-    # The USB-JTAG sometimes returns a write-timeout on the first connect
-    # right after re-enumeration; retry a couple of times.
+    # Build + upload in a SINGLE pio invocation. Running `pio run` and then
+    # a separate `pio run -t upload` pays PlatformIO's ~15 s LDF/registry-
+    # lookup overhead twice (the sources compile once, but every pio run
+    # re-scans deps), so we fold the build into the upload target. The
+    # USB-JTAG sometimes returns a write-timeout on the first connect right
+    # after re-enumeration; retry a couple of times -- the firmware is
+    # already built by then, so retries don't recompile.
+    echo "== build + upload $1 =="
     local ok=0
     for attempt in 1 2 3; do
         echo "== upload attempt $attempt -> $port =="

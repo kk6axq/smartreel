@@ -20,6 +20,7 @@
 #pragma once
 
 #include "ui/app_state.h"
+#include "app/slot_map.h"
 
 namespace config_store {
 
@@ -46,13 +47,15 @@ struct BehaviourCfg {
     bool scan_confirm;
 };
 
+// Commissioned rack layout. Captured once at commissioning (Configure ->
+// Slots / Dividers) and then treated as the source of truth: live
+// hardware is validated against it. `committed == false` means the system
+// is still being set up, so the UI follows live topology instead.
 struct RackCfg {
-    int  n_chains;
-    int  slots_per_chain;
-    char numbering[24];   // "ltr-ttb", "rtl-ttb", "per-chain"
-    int  skip_count;
-    int  skip_list[8];
-    char rack_name[32];
+    char               rack_name[32];
+    bool               committed;
+    uint8_t            module_count[app::SlotMap::N_PORTS];  // expected modules/port
+    app::DividerLayout dividers;                             // pulled (combined) boundaries
 };
 
 struct Config {

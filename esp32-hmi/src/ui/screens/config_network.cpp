@@ -12,11 +12,13 @@
 #include "ui/text_entry_modal.h"
 #include "net/wifi_mgr.h"
 #include "net/inv_api.h"
+#include "sensors/qr_scanner.h"
 #include "util/lvgl_async.h"
 #include "ui/app_state.h"
 #include "storage/config_store.h"
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <stdio.h>
@@ -101,7 +103,7 @@ static void build_status_card(lv_obj_t* parent) {
     form_row_label(r, "State", nullptr);
     lv_obj_t* st = lv_label_create(r);
     lv_label_set_text(st, wifi_mgr::status_str());
-    lv_obj_set_style_text_font(st, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(st, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(st, status_color(state), 0);
 
     // Network name
@@ -110,7 +112,7 @@ static void build_status_card(lv_obj_t* parent) {
     form_row_label(r, "Network", nullptr);
     lv_obj_t* sl = lv_label_create(r);
     lv_label_set_text(sl, w.ssid[0] ? w.ssid : "(none configured)");
-    lv_obj_set_style_text_font(sl, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_font(sl, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(sl, w.ssid[0] ? color::text() : color::text_muted(), 0);
 
     // IP + RSSI when connected
@@ -119,7 +121,7 @@ static void build_status_card(lv_obj_t* parent) {
         form_row_label(r, "IP address", nullptr);
         lv_obj_t* ip = lv_label_create(r);
         lv_label_set_text(ip, wifi_mgr::ipv4());
-        lv_obj_set_style_text_font(ip, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(ip, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_color(ip, color::text(), 0);
 
         char rb[32];
@@ -128,7 +130,7 @@ static void build_status_card(lv_obj_t* parent) {
         form_row_label(r, "Signal", nullptr);
         lv_obj_t* rl = lv_label_create(r);
         lv_label_set_text(rl, rb);
-        lv_obj_set_style_text_font(rl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(rl, &lv_font_montserrat_28, 0);
         lv_obj_set_style_text_color(rl, color::text(), 0);
     }
 
@@ -164,7 +166,7 @@ static void build_scan_card(lv_obj_t* parent) {
         lv_obj_t* l = lv_label_create(r);
         lv_label_set_text(l, "No scan results. Tap Scan to search.");
         lv_obj_set_style_text_color(l, color::text_muted(), 0);
-        lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
         lv_obj_set_width(l, LV_PCT(100));
         return;
     }
@@ -207,6 +209,97 @@ static void build_scan_card(lv_obj_t* parent) {
 
 namespace {
     bool g_test_in_flight = false;
+
+    // ---- QR provisioning (Scan setup code) --------------------------
+    // The plugin's web panel (and the mock's dashboard) display an
+    // SRPROV1 QR carrying {url, token}; scanning it replaces typing
+    // both on the on-screen keyboard (docs/hmi-plugin-api.md,
+    // Provisioning). Poll state mirrors the Load screen's scanner use.
+    bool        g_prov_scanning = false;
+    lv_timer_t* g_prov_timer    = nullptr;
+    char        g_prov_status[96] = {};
+}
+
+static void on_test(lv_event_t*);   // fwd: provisioning auto-runs a test
+
+// Parse "SRPROV1:{\"u\":...,\"t\":...}" into config. Returns false with
+// a status message on any shape problem.
+static bool apply_provision_payload(const char* payload) {
+    const char* prefix = "SRPROV1:";
+    if (strncmp(payload, prefix, strlen(prefix)) != 0) {
+        snprintf(g_prov_status, sizeof(g_prov_status),
+                 "Not a SmartReel setup code");
+        return false;
+    }
+    JsonDocument doc;
+    if (deserializeJson(doc, payload + strlen(prefix)) != DeserializationError::Ok) {
+        snprintf(g_prov_status, sizeof(g_prov_status), "Setup code is corrupt");
+        return false;
+    }
+    const char* url   = doc["u"] | "";
+    const char* token = doc["t"] | "";
+    if (!url[0] || !token[0]) {
+        snprintf(g_prov_status, sizeof(g_prov_status),
+                 "Setup code missing URL or token");
+        return false;
+    }
+    if (strncmp(url, "https://", 8) != 0) {
+        snprintf(g_prov_status, sizeof(g_prov_status),
+                 "Setup code URL must be https://");
+        return false;
+    }
+    auto& iv = config_store::cfg().inventree;
+    snprintf(iv.url,   sizeof(iv.url),   "%s", url);
+    snprintf(iv.token, sizeof(iv.token), "%s", token);
+    // doc["f"] (cert fingerprint) is accepted but unused until the
+    // client pins certs; setInsecure() is the current dev posture.
+    return true;
+}
+
+static void prov_poll(lv_timer_t*) {
+    if (!g_prov_scanning) return;
+    if (ui::current() != ui::Screen::ConfigNetwork) {
+        g_prov_scanning = false;       // navigated away: stop quietly
+        return;
+    }
+    if (!qr_scanner::present()) {
+        snprintf(g_prov_status, sizeof(g_prov_status),
+                 "No QR scanner detected on I2C");
+        g_prov_scanning = false;
+        ui::rebuild_current();
+        return;
+    }
+    char buf[256];
+    if (!qr_scanner::poll(buf, sizeof(buf))) return;
+
+    if (apply_provision_payload(buf)) {
+        g_prov_scanning = false;
+        if (!config_store::save_config()) {
+            Serial.println("[net-cfg] provision: save_config failed (no SD?)");
+        }
+        snprintf(g_prov_status, sizeof(g_prov_status),
+                 "Setup code applied - testing connection...");
+        ui::rebuild_current();
+        on_test(nullptr);              // immediate health check
+    } else {
+        // Keep scanning; the status line explains what was wrong.
+        ui::rebuild_current();
+    }
+}
+
+static void on_prov_scan(lv_event_t*) {
+    g_prov_scanning = !g_prov_scanning;
+    if (g_prov_scanning) {
+        char drain[256];
+        (void)qr_scanner::poll(drain, sizeof(drain));   // flush stale code
+        snprintf(g_prov_status, sizeof(g_prov_status),
+                 "Point the scanner at the setup QR from the InvenTree "
+                 "SmartReel panel.");
+        if (!g_prov_timer) g_prov_timer = lv_timer_create(prov_poll, 200, nullptr);
+    } else {
+        g_prov_status[0] = 0;
+    }
+    ui::rebuild_current();
 }
 
 static void persist_config() {
@@ -359,6 +452,26 @@ static void build_inventree_card(lv_obj_t* parent) {
 
     auto& iv = config_store::cfg().inventree;
 
+    // ---- Scan-to-provision row (preferred over typing) ----
+    {
+        lv_obj_t* r = form_row(fc);
+        form_row_label(r, "Setup by QR code",
+                       "Scan the code from InvenTree's SmartReel panel");
+        button(r, g_prov_scanning ? "Stop" : "Scan setup code",
+               g_prov_scanning ? BtnKind::Danger : BtnKind::Primary,
+               on_prov_scan);
+    }
+    if (g_prov_status[0]) {
+        lv_obj_t* r = form_row(fc);
+        lv_obj_t* l = lv_label_create(r);
+        lv_label_set_text(l, g_prov_status);
+        lv_obj_set_style_text_color(l, g_prov_scanning ? color::accent()
+                                                       : color::text_muted(), 0);
+        lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_width(l, LV_PCT(100));
+    }
+
     tappable_field_row(fc, "URL", "Tap to edit",
                        iv.url[0] ? iv.url : "(not set)", 280, false,
                        on_url_tap);
@@ -377,7 +490,7 @@ static void build_inventree_card(lv_obj_t* parent) {
     lv_obj_t* lbl = lv_label_create(r);
     lv_label_set_text(lbl, health_label());
     lv_obj_set_style_text_color(lbl, health_color(), 0);
-    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_montserrat_24, 0);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_flex_grow(lbl, 1);
 

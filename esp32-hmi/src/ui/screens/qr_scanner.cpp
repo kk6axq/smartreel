@@ -90,7 +90,7 @@ static void create_log_rows_once() {
         lv_label_set_text(t, "");
         lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
         lv_obj_set_style_text_color(t, color::text(), 0);
-        lv_obj_set_style_text_font(t, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_font(t, &lv_font_montserrat_28, 0);
         lv_obj_set_flex_grow(t, 1);
 
         g_log_rows[i]   = row;
@@ -110,7 +110,7 @@ static void update_log_display() {
             g_empty_lbl = lv_label_create(g_log_container);
             lv_label_set_text(g_empty_lbl, "(no scans yet)");
             lv_obj_set_style_text_color(g_empty_lbl, color::text_muted(), 0);
-            lv_obj_set_style_text_font(g_empty_lbl, &lv_font_montserrat_14, 0);
+            lv_obj_set_style_text_font(g_empty_lbl, &lv_font_montserrat_28, 0);
         }
         lv_obj_clear_flag(g_empty_lbl, LV_OBJ_FLAG_HIDDEN);
     } else if (g_empty_lbl) {
@@ -208,13 +208,13 @@ void build_qr_scanner(lv_obj_t* body) {
     lv_label_set_text(g_last_lbl,
                       g_scan_total > 0 ? g_log[(g_log_head - 1 + LOG_MAX) % LOG_MAX]
                                        : "(no scan yet)");
-    lv_obj_set_style_text_font(g_last_lbl, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_font(g_last_lbl, &lv_font_montserrat_48, 0);
     lv_obj_set_style_text_color(g_last_lbl, color::text(), 0);
     lv_label_set_long_mode(g_last_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(g_last_lbl, LV_PCT(100));
 
     g_status_lbl = lv_label_create(last_card);
-    lv_obj_set_style_text_font(g_status_lbl, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_font(g_status_lbl, &lv_font_montserrat_24, 0);
     lv_label_set_long_mode(g_status_lbl, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(g_status_lbl, LV_PCT(100));
     g_status_cache[0] = 0;   // force first paint

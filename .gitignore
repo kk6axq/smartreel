@@ -48,3 +48,33 @@ fp-info-cache
 # PlatformIO build output (firmware projects)
 .pio/
 **/.pio/
+
+# Python virtualenvs / caches (mock server, scripts)
+.venv/
+**/.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# Per-machine shell / editor / tooling state
+.bash_profile
+.bashrc
+.profile
+.zprofile
+.zshrc
+.gitconfig
+.ripgreprc
+.idea/
+.vscode/
+.mcp.json
+*.log
+
+# Large 3D / fabrication exports and generated label assets (kept out of git)
+*.step
+*.stp
+labels/
+
+# KiCad working copies / backups
+*working_backup*
+*_predupe*
+SmartReel V2.kicad_pcb

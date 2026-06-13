@@ -46,7 +46,7 @@ namespace color {
 namespace layout {
     static constexpr int SCREEN_W   = 800;
     static constexpr int SCREEN_H   = 480;
-    static constexpr int STATUS_H   = 40;
+    static constexpr int STATUS_H   = 64;   // sized for the 28pt title
     static constexpr int BODY_H     = SCREEN_H - STATUS_H;
     static constexpr int RADIUS     = 6;
     static constexpr int PAD_EDGE   = 10;

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>SmartReel mock InvenTree</title>
+    <link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+
+<header>
+    <div class="title">
+        <h1>SmartReel · mock InvenTree</h1>
+        <div class="server-meta" id="server-meta">connecting…</div>
+    </div>
+    <div class="auth">
+        <span class="conn-dot" id="conn-dot" aria-label="connection"></span>
+        <input id="token" type="password" placeholder="API token" autocomplete="off">
+        <button id="save-token">Save</button>
+    </div>
+</header>
+
+<main>
+
+    <section class="stats" id="stats">
+        <div class="stat"><span class="k">slots</span><span class="v" id="s-slots">–</span></div>
+        <div class="stat"><span class="k">occupied</span><span class="v" id="s-occ">–</span></div>
+        <div class="stat"><span class="k">empty</span><span class="v" id="s-empty">–</span></div>
+        <div class="stat"><span class="k">pick jobs</span><span class="v" id="s-jobs">–</span></div>
+        <div class="stat"><span class="k">anomalies</span><span class="v" id="s-anom">–</span></div>
+        <div class="stat"><span class="k">ops cached</span><span class="v" id="s-ops">–</span></div>
+    </section>
+
+    <section class="card">
+        <header class="card-head">
+            <h2>Rack</h2>
+            <span class="legend">
+                <span class="sw sw-empty"></span> empty
+                <span class="sw sw-occ"></span> occupied
+            </span>
+        </header>
+        <div class="rack" id="rack"></div>
+        <div class="slot-detail" id="slot-detail">Click a slot to inspect.</div>
+    </section>
+
+    <section class="card">
+        <header class="card-head"><h2>Pick jobs</h2></header>
+        <div id="jobs"></div>
+    </section>
+
+    <section class="card">
+        <header class="card-head"><h2>Anomalies</h2></header>
+        <div id="anomalies" class="muted">none</div>
+    </section>
+
+    <section class="card">
+        <header class="card-head">
+            <h2>HMI provisioning</h2>
+            <button id="show-provision">Show setup QR</button>
+        </header>
+        <div id="provision" class="provision muted">
+            Scan this from the HMI (Settings → Network → Scan setup code)
+            instead of typing the URL and token. Open this page via the LAN
+            IP so the payload URL is reachable from the HMI.
+        </div>
+    </section>
+
+</main>
+
+<footer>
+    polls every 2 s · last update <span id="last-tick">–</span>
+</footer>
+
+<script src="/ui/app.js"></script>
+</body>
+</html>

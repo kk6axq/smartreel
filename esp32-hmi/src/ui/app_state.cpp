@@ -1,5 +1,8 @@
 #include "ui/app_state.h"
-#include "storage/parts_catalog.h"
+#include "storage/config_store.h"
+#include "app/slot_map.h"
+#include "app/hw_mirror.h"
+#include "app/inv_sync.h"
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -24,133 +27,113 @@ static bool               g_inited        = false;
 static SemaphoreHandle_t  g_mutex         = nullptr;
 static bool               g_loaded_from_sd = false;
 
-// ---- Parts catalog (mirrors DUMMY_PARTS in the HTML) --------------
-struct PartTemplate {
-    const char* id;
-    const char* name;
-    const char* pkg;
-    const char* mfg;
-};
-static const PartTemplate kCatalog[] = {
-    {"R-10K-0805",   "RES 10kohm 1% 0805",       "0805",   "Yageo"},
-    {"R-1K-0603",    "RES 1kohm 1% 0603",        "0603",   "Yageo"},
-    {"R-100R-0603",  "RES 100ohm 1% 0603",       "0603",   "Yageo"},
-    {"R-4K7-0805",   "RES 4.7kohm 1% 0805",      "0805",   "Yageo"},
-    {"C-100N-0603",  "CAP 100nF X7R 0603",       "0603",   "Murata"},
-    {"C-10U-0805",   "CAP 10uF X5R 0805",        "0805",   "Samsung"},
-    {"C-1U-0603",    "CAP 1uF X7R 0603",         "0603",   "Murata"},
-    {"L-10U-0805",   "IND 10uH 0805",            "0805",   "Coilcraft"},
-    {"D-LED-G-0603", "LED green 0603",           "0603",   "Lite-On"},
-    {"D-LED-R-0603", "LED red 0603",             "0603",   "Lite-On"},
-    {"D-1N4148",     "DIO 1N4148 SOD-123",       "SOD123", "NXP"},
-    {"Q-2N7002",     "MOS 2N7002 SOT-23",        "SOT23",  "ON Semi"},
-    {"IC-LM358",     "OPA LM358 SOIC-8",         "SOIC8",  "TI"},
-    {"IC-555",       "TIM NE555 SOIC-8",         "SOIC8",  "TI"},
-    {"IC-ESP32S3",   "MCU ESP32-S3-WROOM",       "Module", "Espressif"},
-    {"IC-RP2040",    "MCU RP2040 QFN-56",        "QFN56",  "RaspPi"},
-    {"CONN-USBC",    "CONN USB-C receptacle",    "SMD",    "Molex"},
-    {"CONN-JST",     "CONN JST-PH 2-pin",        "TH",     "JST"},
-};
-static constexpr int kCatalogN = sizeof(kCatalog) / sizeof(kCatalog[0]);
-
-static void copy_part(Part& dst, const PartTemplate& src) {
-    snprintf(dst.id,   sizeof(dst.id),   "%s", src.id);
-    snprintf(dst.name, sizeof(dst.name), "%s", src.name);
-    snprintf(dst.pkg,  sizeof(dst.pkg),  "%s", src.pkg);
-    snprintf(dst.mfg,  sizeof(dst.mfg),  "%s", src.mfg);
-    dst.valid = true;
-}
-
-// Deterministic PRNG so we get the same mock layout across boots --
-// makes screenshots reproducible.
+// Deterministic PRNG (qty fallback for a bare-part load with no
+// server-reported quantity).
 static uint32_t s_rng = 0xCAFE1234;
 static uint32_t rng() {
     s_rng = s_rng * 1664525u + 1013904223u;
     return s_rng;
 }
 
-// ---- Build initial rack -------------------------------------------
-static void build_rack(State& st) {
-    int idx = 0;
-    int slot_num = 1;
-    for (int chain = 1; chain <= N_CHAINS; ++chain) {
-        for (int pos = 1; pos <= SLOTS_PER_CHAIN; ++pos, ++idx, ++slot_num) {
-            Slot& s = st.rack[idx];
-            s.slot     = slot_num;
-            s.chain    = chain;
-            s.position = pos;
-
-            // ~60% occupancy
-            bool occupied = (rng() % 100) < 60;
-            if (occupied) {
-                s.state = SlotState::OCCUPIED;
-                copy_part(s.part, kCatalog[rng() % kCatalogN]);
-                s.qty = 50 + (int)(rng() % 1450);
-            } else {
-                s.state = SlotState::EMPTY;
-                s.part.valid = false;
-                s.qty = 0;
-            }
-        }
+// ---- Build the dynamic rack from topology -------------------------
+// The effective topology is the committed config once commissioned,
+// otherwise the live hardware mirror (with dividers derived from the
+// live divider bits so the rack reflects what's physically installed).
+static void effective_topology(uint8_t counts[N_PORTS], DividerLayout& div) {
+    const auto& rc = config_store::cfg().rack;
+    div.clear();
+    if (rc.committed) {
+        for (int p = 0; p < N_PORTS; ++p) counts[p] = rc.module_count[p];
+        div = rc.dividers;
+    } else {
+        for (int p = 0; p < N_PORTS; ++p) counts[p] = hw_mirror::module_count(p);
+        // Derive pulled dividers from the live bits (absent divider = pulled).
+        for (int p = 0; p < N_PORTS; ++p)
+            for (int m = 0; m < counts[p]; ++m)
+                for (int s = 0; s < SlotMap::SLOTS_PER_MODULE; ++s) {
+                    // D_s is the divider to the RIGHT of slot s; the one
+                    // past the last slot of the last module is the port edge.
+                    if (m == counts[p] - 1 && s == SlotMap::SLOTS_PER_MODULE - 1) continue;
+                    if (!hw_mirror::divider_present(p, m, s))
+                        div.set_pulled((uint8_t)p, (uint8_t)m, (uint8_t)s, true);
+                }
     }
 }
 
-// ---- Build pick jobs ----------------------------------------------
-static void add_pick_item(PickJob& j, const char* part_id, int qty) {
-    if (j.n_items >= (int)(sizeof(j.items) / sizeof(j.items[0]))) return;
-    PickItem& it = j.items[j.n_items++];
-    snprintf(it.part_id, sizeof(it.part_id), "%s", part_id);
-    it.part_name[0] = 0;
-    it.qty       = qty;
-    it.slot_num  = 0;
-    it.picked    = false;
+// True if any physical reel-slot in a logical run reads present.
+static bool run_present(const LogicalSlot& ls) {
+    for (int w = 0; w < ls.width; ++w) {
+        int pix = ls.module * SlotMap::SLOTS_PER_MODULE + ls.slot + w;
+        if (hw_mirror::slot_present(ls.port, pix / SlotMap::SLOTS_PER_MODULE,
+                                            pix % SlotMap::SLOTS_PER_MODULE))
+            return true;
+    }
+    return false;
 }
 
-static void build_pick_jobs(State& st) {
-    st.n_pick_jobs = 0;
+void rebuild_rack() {
+    State& st = state();
 
-    auto& a = st.pick_jobs[st.n_pick_jobs++];
-    snprintf(a.id,        sizeof(a.id),        "BO-0042");
-    snprintf(a.name,      sizeof(a.name),      "PCB-Rev-A x 5");
-    snprintf(a.requested, sizeof(a.requested), "14:02");
-    a.n_items = 0;
-    add_pick_item(a, "R-10K-0805",    50);
-    add_pick_item(a, "C-100N-0603",   20);
-    add_pick_item(a, "IC-LM358",       5);
-    add_pick_item(a, "D-LED-G-0603",   5);
+    // Snapshot existing contents by logical number so they survive the rebuild.
+    struct Saved { int num; SlotState state; Part part; int qty; };
+    static Saved   saved[MAX_LOGICAL_SLOTS];
+    static LogicalRack lr;             // large-ish; keep off the stack
+    int nsaved = 0;
+    for (int i = 0; i < st.n_rack; ++i)
+        saved[nsaved++] = { st.rack[i].slot, st.rack[i].state, st.rack[i].part, st.rack[i].qty };
 
-    auto& b = st.pick_jobs[st.n_pick_jobs++];
-    snprintf(b.id,        sizeof(b.id),        "BO-0043");
-    snprintf(b.name,      sizeof(b.name),      "Test-Build-12 proto");
-    snprintf(b.requested, sizeof(b.requested), "14:18");
-    b.n_items = 0;
-    add_pick_item(b, "IC-ESP32S3",  3);
-    add_pick_item(b, "CONN-USBC",   3);
-    add_pick_item(b, "C-10U-0805", 12);
+    uint8_t counts[N_PORTS];
+    DividerLayout div;
+    effective_topology(counts, div);
+    lr.rebuild(counts, div);
 
-    auto& c = st.pick_jobs[st.n_pick_jobs++];
-    snprintf(c.id,        sizeof(c.id),        "BO-0044");
-    snprintf(c.name,      sizeof(c.name),      "Sensor-Hub v2");
-    snprintf(c.requested, sizeof(c.requested), "14:32");
-    c.n_items = 0;
-    add_pick_item(c, "IC-RP2040",   2);
-    add_pick_item(c, "R-4K7-0805", 24);
-    add_pick_item(c, "Q-2N7002",    8);
-    add_pick_item(c, "D-1N4148",   16);
-    add_pick_item(c, "CONN-JST",    4);
+    lock();
+    st.n_rack = lr.n_slots;
+    for (int i = 0; i < lr.n_slots; ++i) {
+        const LogicalSlot& ls = lr.slots[i];
+        Slot& s = st.rack[i];
+        s.slot     = ls.num;
+        s.width    = ls.width;
+        s.port     = ls.port;
+        s.module   = ls.module;
+        s.mslot    = ls.slot;
+        s.chain    = ls.port + 1;
+        s.position = ls.module * SlotMap::SLOTS_PER_MODULE + ls.slot + 1;
+
+        const bool present = run_present(ls);
+        const Saved* sv = nullptr;
+        for (int k = 0; k < nsaved; ++k) if (saved[k].num == ls.num) { sv = &saved[k]; break; }
+        if (sv) {
+            s.state = sv->state;
+            s.part  = sv->part;
+            s.qty   = sv->qty;
+            // Refresh the presence-derived base state (leave workflow
+            // overrides TARGET/PICKED/WARN/ERROR untouched).
+            if (s.state == SlotState::OCCUPIED || s.state == SlotState::EMPTY)
+                s.state = present ? SlotState::OCCUPIED : SlotState::EMPTY;
+        } else {
+            s.state      = present ? SlotState::OCCUPIED : SlotState::EMPTY;
+            s.part.valid = false;
+            s.qty        = 0;
+        }
+    }
+    unlock();
 }
 
 static void seed(State& st) {
     memset(&st, 0, sizeof(st));
     st.online = true;
     st.active_pick_idx = -1;
+    st.pick_out_slot = -1;
     st.load_step = LoadStep::Scan;
     snprintf(st.wifi_ssid, sizeof(st.wifi_ssid), "labnet-2g");
     snprintf(st.inv_url,   sizeof(st.inv_url),   "https://inv.lab.local");
     st.inv_location_id = 42;
     snprintf(st.fw_version, sizeof(st.fw_version), "v0.4.2");
-    build_rack(st);
-    build_pick_jobs(st);
+    st.n_rack = 0;            // populated by rebuild_rack() once topology is known
+    // Pick jobs come live from InvenTree (GET /pickjobs via inv_sync);
+    // start empty rather than seeding fake placeholders.
+    st.n_pick_jobs = 0;
 }
 
 State& state() {
@@ -171,38 +154,39 @@ bool boot_loaded_from_sd()           { return g_loaded_from_sd; }
 void set_boot_loaded_from_sd(bool v) { g_loaded_from_sd = v; }
 
 // ---- Helpers ------------------------------------------------------
-int slots_occupied() {
+static int count_state(SlotState want) {
+    State& st = state();
     int n = 0;
-    for (auto& s : state().rack) if (s.state == SlotState::OCCUPIED) n++;
+    for (int i = 0; i < st.n_rack; ++i) if (st.rack[i].state == want) n++;
     return n;
 }
-int slots_empty() {
-    int n = 0;
-    for (auto& s : state().rack) if (s.state == SlotState::EMPTY) n++;
-    return n;
-}
-int slots_target() {
-    int n = 0;
-    for (auto& s : state().rack) if (s.state == SlotState::TARGET) n++;
-    return n;
-}
+int slots_occupied() { return count_state(SlotState::OCCUPIED); }
+int slots_empty()    { return count_state(SlotState::EMPTY); }
+int slots_target()   { return count_state(SlotState::TARGET); }
 
 Slot* slot_by_num(int n) {
-    if (n < 1 || n > N_SLOTS) return nullptr;
-    return &state().rack[n - 1];
+    State& st = state();
+    for (int i = 0; i < st.n_rack; ++i) if (st.rack[i].slot == n) return &st.rack[i];
+    return nullptr;
 }
 
-const Slot* slot_at(int chain, int position) {
-    if (chain < 1 || chain > N_CHAINS) return nullptr;
-    if (position < 1 || position > SLOTS_PER_CHAIN) return nullptr;
-    int idx = (chain - 1) * SLOTS_PER_CHAIN + (position - 1);
-    return &state().rack[idx];
+const Slot* slot_at_physical(int port, int module, int mslot) {
+    State& st = state();
+    const int pix = module * 16 + mslot;
+    for (int i = 0; i < st.n_rack; ++i) {
+        const Slot& s = st.rack[i];
+        if (s.port != port) continue;
+        const int start = s.module * 16 + s.mslot;
+        if (pix >= start && pix < start + s.width) return &s;
+    }
+    return nullptr;
 }
 
 const Slot* find_part(const char* part_id) {
-    for (auto& s : state().rack) {
-        if (s.state != SlotState::OCCUPIED) continue;
-        if (!s.part.valid) continue;
+    State& st = state();
+    for (int i = 0; i < st.n_rack; ++i) {
+        const Slot& s = st.rack[i];
+        if (s.state != SlotState::OCCUPIED || !s.part.valid) continue;
         if (strcmp(s.part.id, part_id) == 0) return &s;
     }
     return nullptr;
@@ -230,29 +214,18 @@ int pick_job_done_count(const PickJob& j) {
     return n;
 }
 
-// ---- Mock-data triggers (the prototype build wires UI buttons here) ---
+// ---- Load workflow (real QR scan) ---------------------------------
 //
-// These now also push dirty-bits at state_store so persistent changes
-// land on the SD card. The forward-declaration of the state_store
-// dirty API at the top of this file avoids a circular include.
-// ---- Load workflow (real QR scan + mock placement) ----------------
-bool load_apply_scan(const char* qr) {
-    State& st = state();
-    if (st.load_scan_locked) return false;     // already locked; ignore
-    Part p;
-    if (!parts_catalog::lookup(qr, p)) return false;
-    lock();
-    st.load_part        = p;
-    st.load_scan_locked = true;
-    unlock();
-    return true;
-}
-
-void load_apply_part(const Part& p) {
+// Mutators push dirty-bits at state_store so persistent changes land on
+// the SD card. The forward-declaration of the state_store dirty API at
+// the top of this file avoids a circular include.
+void load_apply_part(const Part& p, int stock_id, int qty) {
     State& st = state();
     if (st.load_scan_locked) return;           // already locked; ignore
     lock();
     st.load_part        = p;
+    st.load_stock_id    = stock_id;
+    st.load_qty         = qty;
     st.load_scan_locked = true;
     unlock();
 }
@@ -262,6 +235,8 @@ void load_rescan() {
     lock();
     st.load_scan_locked = false;
     st.load_part.valid  = false;
+    st.load_stock_id    = 0;
+    st.load_qty         = 0;
     unlock();
 }
 
@@ -269,8 +244,8 @@ void load_begin_placement() {
     State& st = state();
     if (!st.load_scan_locked) return;
     lock();
-    for (auto& s : st.rack) {
-        if (s.state == SlotState::EMPTY) s.state = SlotState::TARGET;
+    for (int i = 0; i < st.n_rack; ++i) {
+        if (st.rack[i].state == SlotState::EMPTY) st.rack[i].state = SlotState::TARGET;
     }
     st.load_step = LoadStep::Placed;
     unlock();
@@ -278,52 +253,50 @@ void load_begin_placement() {
     // no dirty mark.
 }
 
-void mock_simulate_load_scan() {
-    State& st = state();
-    if (st.load_scan_locked) return;
-    // Prefer a real catalog QR so the simulated path is identical to a
-    // live scan; fall back to the built-in catalog if no SD parts.json.
-    int n = parts_catalog::count();
-    if (n > 0 && load_apply_scan(parts_catalog::qr_at((int)(rng() % n)))) return;
-    lock();
-    copy_part(st.load_part, kCatalog[rng() % kCatalogN]);
-    st.load_scan_locked = true;
-    unlock();
-}
-
 void mock_place_reel(int slot_num) {
     State& st = state();
     Slot* chosen = slot_by_num(slot_num);
     if (!chosen) return;
+    const int stock_id = st.load_stock_id;
     lock();
     // Clear other lit
-    for (auto& s : st.rack) {
-        if (s.state == SlotState::TARGET && s.slot != slot_num)
-            s.state = SlotState::EMPTY;
+    for (int i = 0; i < st.n_rack; ++i) {
+        if (st.rack[i].state == SlotState::TARGET && st.rack[i].slot != slot_num)
+            st.rack[i].state = SlotState::EMPTY;
     }
     chosen->state = SlotState::OCCUPIED;
     chosen->part  = st.load_part;
-    chosen->qty   = 100 + (int)(rng() % 900);
+    // Real qty from the InvenTree resolve; the random fallback only
+    // covers a bare-part resolve that reported no quantity.
+    chosen->qty   = st.load_qty > 0 ? st.load_qty : 100 + (int)(rng() % 900);
     st.load_step = LoadStep::Scan;
     st.load_part.valid = false;
+    st.load_stock_id = 0;
+    st.load_qty = 0;
     st.load_scan_locked = false;
     unlock();
     state_store::mark_slot_dirty(slot_num);
+    // Report the placement to InvenTree (user story 1: the StockItem
+    // moves into the slot's sub-location). Offline-catalog loads have
+    // no stock id and stay local.
+    if (stock_id > 0) inv_sync::queue_assign(slot_num, stock_id);
 }
 
 void mock_cancel_load() {
     State& st = state();
     lock();
-    for (auto& s : st.rack) {
-        if (s.state == SlotState::TARGET) s.state = SlotState::EMPTY;
+    for (int i = 0; i < st.n_rack; ++i) {
+        if (st.rack[i].state == SlotState::TARGET) st.rack[i].state = SlotState::EMPTY;
     }
     st.load_step = LoadStep::Scan;
     st.load_part.valid = false;
+    st.load_stock_id = 0;
+    st.load_qty = 0;
     st.load_scan_locked = false;
     unlock();
 }
 
-void mock_manual_pick(int slot_num) {
+void remove_reel(int slot_num) {
     Slot* s = slot_by_num(slot_num);
     if (!s) return;
     lock();
@@ -332,6 +305,29 @@ void mock_manual_pick(int slot_num) {
     s->qty = 0;
     unlock();
     state_store::mark_slot_dirty(slot_num);
+}
+
+// ---- Pick-out workflow --------------------------------------------
+// pick_out_slot is touched only on the LVGL task (UI handlers + the
+// RS485 dispatcher both run there), so a plain int write is race-free.
+void begin_pick_out(int slot_num) {
+    Slot* s = slot_by_num(slot_num);
+    if (!s || !s->part.valid) return;       // only inventoried reels
+    state().pick_out_slot = slot_num;
+}
+
+void cancel_pick_out() {
+    state().pick_out_slot = -1;
+}
+
+void finish_pick_out(int slot_num) {
+    remove_reel(slot_num);
+    state().pick_out_slot = -1;
+    // User story 3: the reel's StockItem transfers to the Staging
+    // location once the user physically takes it. Arming is blocked
+    // while offline, so by the time we get here the server op is
+    // expected to succeed (and op_id retries cover blips).
+    inv_sync::queue_pick(slot_num);
 }
 
 void mock_start_pick(int idx) {
@@ -377,8 +373,8 @@ void mock_raise_anomaly(AnomalyKind k) {
                         "Reel removed",
                         "A reel was taken from a slot that is not part of an active pick job.");
             const Slot* s = nullptr;
-            for (auto& slot : st.rack) {
-                if (slot.state == SlotState::OCCUPIED) { s = &slot; break; }
+            for (int i = 0; i < st.n_rack; ++i) {
+                if (st.rack[i].state == SlotState::OCCUPIED) { s = &st.rack[i]; break; }
             }
             if (s) {
                 snprintf(buf, sizeof(buf), "#%d (chain %d)", s->slot, s->chain);
@@ -394,8 +390,8 @@ void mock_raise_anomaly(AnomalyKind k) {
                         "Unexpected reel placement",
                         "A reel was placed in a slot without a matching scan.");
             const Slot* s = nullptr;
-            for (auto& slot : st.rack) {
-                if (slot.state == SlotState::EMPTY) { s = &slot; break; }
+            for (int i = 0; i < st.n_rack; ++i) {
+                if (st.rack[i].state == SlotState::EMPTY) { s = &st.rack[i]; break; }
             }
             if (s) {
                 snprintf(buf, sizeof(buf), "#%d (chain %d)", s->slot, s->chain);
