@@ -5,6 +5,10 @@ SmartReel repo — the mock server (mock-inventree/) implements the same
 shapes. The HMI authenticates with `Authorization: Token <ApiToken>`;
 the Build Order panel uses the browser session.
 
+Multi-unit: rack-scoped endpoints resolve their rack from the request's
+token (provisioning binds token -> rack location). The HMI is unaware of
+which rack it drives — it just sends its token. See services.py.
+
 Paths are registered WITHOUT trailing slashes because the HMI builds
 `<base>/api/v1/<path>` literally and Django's APPEND_SLASH redirect
 would turn POSTs into GETs.
@@ -45,6 +49,20 @@ class SmartReelAPIView(APIView):
 
     # -- shared helpers ----------------------------------------------------
 
+    def rack(self, request):
+        """The rack this request's token controls (or the global default).
+        Raises if neither is configured."""
+        r = services.rack_for_token(getattr(request, "auth", None))
+        if r is None:
+            raise services.ConfigError(
+                "This HMI token is not bound to a SmartReel rack. Re-provision "
+                "it from the rack's stock-location page in InvenTree."
+            )
+        return r
+
+    def rack_or_none(self, request):
+        return services.rack_for_token(getattr(request, "auth", None))
+
     def idempotent(self, request, fn):
         """Replay a cached response for a repeated op_id, else run fn()."""
         op_id = (request.data or {}).get("op_id")
@@ -81,7 +99,7 @@ class RackView(SmartReelAPIView):
     """GET /rack — full snapshot (boot sync + reconciliation)."""
 
     def get(self, request):
-        return Response(services.rack_snapshot())
+        return Response(services.rack_snapshot(self.rack(request)))
 
 
 class RegisterView(SmartReelAPIView):
@@ -91,12 +109,12 @@ class RegisterView(SmartReelAPIView):
         n = self.require_int(request, "n_slots")
         if n < 1 or n > 512:
             raise ValueError(f"implausible n_slots {n}")
+        rack = self.rack(request)
 
         def run():
-            slots = services.ensure_slots(n, request.user)
+            slots = services.ensure_slots(rack, n, request.user)
             return {
-                "location_id": services.require(
-                    services.rack_location(), "RACK_LOCATION").pk,
+                "location_id": rack.pk,
                 "slot_locations": [
                     {"slot": k, "location_id": v.pk} for k, v in sorted(slots.items())
                 ],
@@ -112,8 +130,9 @@ class ResolveView(SmartReelAPIView):
         code = (request.data or {}).get("code")
         if not code or not isinstance(code, str):
             raise ValueError("missing 'code'")
-        # Resolution is read-only; no idempotency cache needed.
-        return Response(services.resolve_barcode(code))
+        # Resolution is read-only; no idempotency cache needed. The rack
+        # only scopes the reported slot_num, so a missing binding is fine.
+        return Response(services.resolve_barcode(self.rack_or_none(request), code))
 
 
 class AssignView(SmartReelAPIView):
@@ -121,9 +140,10 @@ class AssignView(SmartReelAPIView):
 
     def post(self, request, slot_num: int):
         stock_item_id = self.require_int(request, "stock_item_id")
+        rack = self.rack(request)
         return self.idempotent(
             request,
-            lambda: services.assign_slot(slot_num, stock_item_id, request.user),
+            lambda: services.assign_slot(rack, slot_num, stock_item_id, request.user),
         )
 
 
@@ -134,9 +154,10 @@ class PickView(SmartReelAPIView):
         dest = (request.data or {}).get("destination_id")
         if dest is not None and not isinstance(dest, int):
             raise ValueError("invalid 'destination_id'")
+        rack = self.rack(request)
         return self.idempotent(
             request,
-            lambda: services.pick_slot(slot_num, request.user, destination_id=dest),
+            lambda: services.pick_slot(rack, slot_num, request.user, destination_id=dest),
         )
 
 
@@ -145,17 +166,21 @@ class ClearView(SmartReelAPIView):
 
     def post(self, request, slot_num: int):
         reason = (request.data or {}).get("reason")
+        rack = self.rack(request)
         return self.idempotent(
             request,
-            lambda: services.clear_slot(slot_num, request.user, reason=reason),
+            lambda: services.clear_slot(rack, slot_num, request.user, reason=reason),
         )
 
 
 class PickJobsView(SmartReelAPIView):
-    """GET /pickjobs — jobs sourced from build-order metadata."""
+    """GET /pickjobs — jobs targeted at this token's rack.
+    GET /pickjobs?all=1 — every rack's jobs (web panel; no token needed)."""
 
     def get(self, request):
-        return Response({"jobs": services.list_jobs()})
+        if request.query_params.get("all") in ("1", "true"):
+            return Response({"jobs": services.all_jobs()})
+        return Response({"jobs": services.list_jobs(self.rack(request))})
 
 
 class JobItemPickView(SmartReelAPIView):
@@ -163,10 +188,18 @@ class JobItemPickView(SmartReelAPIView):
 
     def post(self, request, job_id: str, idx: int):
         slot_num = self.require_int(request, "slot_num")
+        rack = self.rack(request)
         return self.idempotent(
             request,
-            lambda: services.pick_job_item(job_id, idx, slot_num, request.user),
+            lambda: services.pick_job_item(rack, job_id, idx, slot_num, request.user),
         )
+
+
+class RacksView(SmartReelAPIView):
+    """GET /racks — list configured racks (web panel rack selector)."""
+
+    def get(self, request):
+        return Response({"racks": services.rack_info_list()})
 
 
 class JobView(SmartReelAPIView):
@@ -179,12 +212,19 @@ class JobView(SmartReelAPIView):
         build = Build.objects.filter(pk=build_id).first()
         if build is None:
             raise LookupError(f"build {build_id} not found")
+
+        # Target rack is explicit (the panel's rack selector).
+        rack_id = self.require_int(request, "rack_location_id")
+        rack = services._loc_by_pk(rack_id)
+        if rack is None:
+            raise LookupError(f"rack location {rack_id} not found")
+
         dest = (request.data or {}).get("destination_id")
         if dest is not None and not isinstance(dest, int):
             raise ValueError("invalid 'destination_id'")
         return self.idempotent(
             request,
-            lambda: services.create_job_from_build(build, request.user, dest),
+            lambda: services.create_job_from_build(build, request.user, rack, dest),
         )
 
     def delete(self, request, job_id: str):
@@ -194,13 +234,13 @@ class JobView(SmartReelAPIView):
 
 
 class LocateView(SmartReelAPIView):
-    """GET /parts/locate?part_id=… — slots currently holding a part."""
+    """GET /parts/locate?part_id=… — slots in this rack holding a part."""
 
     def get(self, request):
         part_id = request.query_params.get("part_id")
         if not part_id:
             raise ValueError("missing 'part_id'")
-        return Response(services.locate_part(part_id))
+        return Response(services.locate_part(self.rack(request), part_id))
 
 
 class AnomalyView(SmartReelAPIView):
@@ -214,22 +254,21 @@ class AnomalyView(SmartReelAPIView):
             raise ValueError(f"kind must be one of {self.KINDS}")
         slot_num = (request.data or {}).get("slot_num")
         detail = str((request.data or {}).get("detail") or "")
+        rack = self.rack(request)
         return self.idempotent(
             request,
-            lambda: services.log_anomaly(kind, slot_num, detail),
+            lambda: services.log_anomaly(rack, kind, slot_num, detail),
         )
 
 
 class ProvisionView(SmartReelAPIView):
-    """GET /provision — SRPROV1 payload + QR for the web panel.
+    """GET /provision?location=<pk> — provision one rack and return its QR.
 
-    Issues (or rotates, with ?rotate=1) a dedicated InvenTree ApiToken
-    named 'smartreel-hmi' for the requesting user, so HMI access can be
-    revoked independently of any personal token. Staff only; meant to be
-    called from the browser session, never from the HMI.
+    Designates the given stock location as a SmartReel rack, issues (or
+    rotates with ?rotate=1) a dedicated ApiToken bound to it, and returns
+    the SRPROV1 payload + QR the HMI scans. Staff only; called from the
+    location page's panel, never from the HMI. `location` is required.
     """
-
-    TOKEN_NAME = "smartreel-hmi"
 
     def get(self, request):
         import json
@@ -242,8 +281,17 @@ class ProvisionView(SmartReelAPIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
+        rack = services._loc_by_pk(request.query_params.get("location"))
+        if rack is None:
+            return Response(
+                {"detail": "valid 'location' query param required"},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        services.mark_rack(rack)
+
+        token_name = f"smartreel-rack-{rack.pk}"
         rotate = request.query_params.get("rotate") in ("1", "true")
-        qs = ApiToken.objects.filter(user=request.user, name=self.TOKEN_NAME)
+        qs = ApiToken.objects.filter(user=request.user, name=token_name)
         token = qs.first()
         if rotate and token is not None:
             qs.delete()
@@ -251,9 +299,11 @@ class ProvisionView(SmartReelAPIView):
         if token is None:
             token = ApiToken.objects.create(
                 user=request.user,
-                name=self.TOKEN_NAME,
+                name=token_name,
                 expiry=timezone.now().date() + datetime.timedelta(days=3650),
             )
+        # Bind this token to the rack it controls (multi-unit identity).
+        token.set_metadata(services.TOKEN_RACK_KEY, rack.pk)
 
         base = _public_base_url(request)
         payload = "SRPROV1:" + json.dumps(
@@ -263,8 +313,9 @@ class ProvisionView(SmartReelAPIView):
         return Response({
             "payload": payload,
             "svg": _qr_svg(payload),
-            "token_name": self.TOKEN_NAME,
+            "token_name": token_name,
             "base_url": base,
+            "rack": {"location_id": rack.pk, "name": rack.pathstring or rack.name},
         })
 
 

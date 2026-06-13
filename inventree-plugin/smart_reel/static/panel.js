@@ -65,11 +65,20 @@ function shell(target) {
 export async function renderBuildPanel(target, data) {
     const root = shell(target);
     const buildId = data?.context?.build_id ?? data?.id;
+    let racks = [];
+
+    function rackName(id) {
+        const r = racks.find((x) => x.location_id === id);
+        return r ? r.name : `location ${id}`;
+    }
 
     async function refresh() {
         let jobs;
         try {
-            jobs = (await call("GET", "/pickjobs")).jobs || [];
+            [jobs, racks] = await Promise.all([
+                call("GET", "/pickjobs?all=1").then((d) => d.jobs || []),
+                call("GET", "/racks").then((d) => d.racks || []),
+            ]);
         } catch (e) {
             root.innerHTML = `<div class="sr-err">SmartReel API error: ${esc(e.message)}</div>`;
             return;
@@ -78,22 +87,44 @@ export async function renderBuildPanel(target, data) {
         job ? renderJob(job) : renderEmpty();
     }
 
+    function rackSelect() {
+        if (!racks.length) {
+            return `<p class="sr-err">No SmartReel racks configured. Provision a
+                    rack from its stock-location page first.</p>`;
+        }
+        return `<label>Rack:
+            <select id="sr-rack">
+                ${racks.map((r) =>
+                    `<option value="${r.location_id}">${esc(r.name)} (${r.n_slots} slots)</option>`
+                ).join("")}
+            </select></label>`;
+    }
+
+    async function send(extra) {
+        const sel = root.querySelector("#sr-rack");
+        const rack_location_id = sel ? Number(sel.value) : undefined;
+        await call("POST", "/pickjobs/from-build", {
+            build_id: buildId,
+            rack_location_id,
+            op_id: `panel-${buildId}-${Date.now()}`,
+            ...(extra || {}),
+        });
+        refresh();
+    }
+
     function renderEmpty() {
         root.innerHTML = `
             <p>No SmartReel pick job for this build order.</p>
             <p class="sr-muted">Sending creates one item per BOM line; the
-            SmartReel HMI lights up the slots that hold each part and reels
-            transfer to the staging location as they're picked.</p>
-            <button id="sr-send">Send to SmartReel</button>
+            chosen SmartReel rack lights up the slots holding each part and
+            reels transfer to staging as they're picked.</p>
+            ${rackSelect()}
+            <button id="sr-send" ${racks.length ? "" : "disabled"}>Send to SmartReel</button>
             <div class="sr-err" id="sr-msg"></div>`;
-        root.querySelector("#sr-send").addEventListener("click", async () => {
-            try {
-                await call("POST", "/pickjobs/from-build",
-                    { build_id: buildId, op_id: `panel-${buildId}-${Date.now()}` });
-                refresh();
-            } catch (e) {
-                root.querySelector("#sr-msg").textContent = e.message;
-            }
+        const btn = root.querySelector("#sr-send");
+        if (btn) btn.addEventListener("click", async () => {
+            try { await send(); }
+            catch (e) { root.querySelector("#sr-msg").textContent = e.message; }
         });
     }
 
@@ -112,22 +143,22 @@ export async function renderBuildPanel(target, data) {
         root.innerHTML = `
             <p>Pick job <b>${esc(job.id)}</b>
                <span class="sr-badge ${esc(job.status)}">${esc(job.status)}</span>
-               <span class="sr-muted">requested ${esc(job.requested_at)}</span></p>
+               <span class="sr-muted">→ ${esc(rackName(job.rack_id))} ·
+               requested ${esc(job.requested_at)}</span></p>
             <table>
                 <tr><th></th><th>Part</th><th>Name</th><th>Qty</th><th>Location</th></tr>
                 ${rows}
             </table>
+            <div style="margin-top:8px">${rackSelect()}</div>
             <button id="sr-resend">Resend (reset progress)</button>
             <button id="sr-remove">Remove from SmartReel</button>
             <div class="sr-err" id="sr-msg"></div>`;
+        // Pre-select the rack the job currently targets.
+        const sel = root.querySelector("#sr-rack");
+        if (sel && job.rack_id) sel.value = String(job.rack_id);
         root.querySelector("#sr-resend").addEventListener("click", async () => {
-            try {
-                await call("POST", "/pickjobs/from-build",
-                    { build_id: buildId, op_id: `panel-${buildId}-${Date.now()}` });
-                refresh();
-            } catch (e) {
-                root.querySelector("#sr-msg").textContent = e.message;
-            }
+            try { await send(); }
+            catch (e) { root.querySelector("#sr-msg").textContent = e.message; }
         });
         root.querySelector("#sr-remove").addEventListener("click", async () => {
             try {
@@ -142,25 +173,28 @@ export async function renderBuildPanel(target, data) {
     refresh();
 }
 
-/* ---------------- Provisioning panel (rack location page) ---------------- */
+/* ---------------- Provisioning panel (any stock-location page) ---------------- */
 
-export async function renderProvisionPanel(target, _data) {
+export async function renderProvisionPanel(target, data) {
     const root = shell(target);
+    const locationId = data?.context?.location_id ?? data?.id;
+    const q = (rotate) =>
+        `/provision?location=${encodeURIComponent(locationId)}` + (rotate ? "&rotate=1" : "");
 
     async function refresh(rotate) {
         let p;
         try {
-            p = await call("GET", "/provision" + (rotate ? "?rotate=1" : ""));
+            p = await call("GET", q(rotate));
         } catch (e) {
             root.innerHTML = `<div class="sr-err">${esc(e.message)}</div>`;
             return;
         }
         root.innerHTML = `
-            <p>Scan from the HMI: <b>Settings → Network → Scan setup code</b>.
-               No typing required.</p>
+            <p>This location is provisioned as a <b>SmartReel rack</b>. Scan from
+               the HMI: <b>Settings → Network → Scan setup code</b> — no typing.</p>
             <div class="sr-qr">${p.svg ||
                 '<div class="sr-muted">QR rendering unavailable — use the payload below</div>'}</div>
-            <div class="sr-muted">Server: ${esc(p.base_url)} ·
+            <div class="sr-muted">Rack: ${esc(p.rack.name)} · server ${esc(p.base_url)} ·
                 token <code>${esc(p.token_name)}</code></div>
             <div class="sr-payload">${esc(p.payload)}</div>
             <button id="sr-rotate">Rotate token (revokes the old one)</button>
@@ -168,5 +202,13 @@ export async function renderProvisionPanel(target, _data) {
         root.querySelector("#sr-rotate").addEventListener("click", () => refresh(true));
     }
 
-    refresh(false);
+    // Lazy: don't designate the location a rack on mere page view. Offer a
+    // button; provisioning (which tags it + issues the token) runs on click.
+    root.innerHTML = `
+        <p>Use this stock location as a SmartReel rack and provision an HMI for it.</p>
+        <p class="sr-muted">Provisioning designates this location as a rack, creates
+           a setup QR, and issues an API token bound to this rack.</p>
+        <button id="sr-provision">Provision SmartReel rack here</button>
+        <div class="sr-err" id="sr-msg"></div>`;
+    root.querySelector("#sr-provision").addEventListener("click", () => refresh(false));
 }

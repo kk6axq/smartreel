@@ -21,15 +21,26 @@ smart_reel/
   static/panel.js  # both web panels (no build step)
 ```
 
+## Multiple racks
+
+One instance drives many independent SmartReel units. Each rack is its
+own StockLocation tagged `metadata['smartreel'] = {"is_rack": true}`;
+provisioning binds the issued API token to that rack
+(`token.metadata['smartreel_rack']`), so the HMI's token alone tells the
+plugin which rack it's driving — no HMI/wire change. An unbound token is
+refused (409). Provision each rack from its stock-location page → the
+"SmartReel HMI" panel. `./test-multirack.sh` covers rack isolation.
+
 ## Behaviour notes
 
-- **Slots** are StockLocation children of the configured rack location,
-  carrying `metadata['smartreel'] = {'slot': n}`; created/grown by
-  `POST /rack/register`.
+- **Slots** are StockLocation children of a rack location, carrying
+  `metadata['smartreel'] = {'slot': n}`; created/grown by
+  `POST /rack/register` (which targets the token's rack).
 - **Picks are whole-reel** `StockItem.move()` transfers (audit-trailed) to
   the staging location — no quantity math.
-- **Pick jobs** live in the source Build's `metadata['smartreel']`; job
-  status is derived (`pending`/`partial`/`done`).
+- **Pick jobs** live in the source Build's `metadata['smartreel']`
+  (with a target rack pk); job status is derived
+  (`pending`/`partial`/`done`).
 - **Anomalies** append to the rack location's
   `metadata['smartreel_anomalies']` (capped at 200).
 
@@ -37,9 +48,10 @@ smart_reel/
 
 | Setting | Meaning |
 |---|---|
-| Rack location | structural location representing the SmartReel unit |
-| Staging location | default destination for picked reels |
-| Pulled location | destination for anomaly-cleared reels |
+| Staging location | default destination for picked reels (per-rack override via metadata) |
+| Pulled location | destination for anomaly-cleared reels (per-rack override via metadata) |
+
+Racks are not a setting — provision each from its stock-location page.
 
 InvenTree must have **plugin URL integration enabled**
 (`ENABLE_PLUGINS_URL`) for the API to be reachable.

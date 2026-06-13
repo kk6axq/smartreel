@@ -38,21 +38,21 @@ class SmartReelPlugin(UserInterfaceMixin, UrlsMixin, SettingsMixin, InvenTreePlu
                            "address the browser used.",
             "default": "",
         },
-        "RACK_LOCATION": {
-            "name": "Rack location",
-            "description": "Structural stock location representing this SmartReel unit. "
-                           "Slot sub-locations are created underneath it.",
-            "model": "stock.stocklocation",
-        },
+        # Each SmartReel rack is provisioned from its own stock-location page
+        # (the "SmartReel HMI" panel); the rack's identity rides on the HMI
+        # token, so there is no global "rack location" setting. Staging and
+        # pulled below are instance-wide defaults each rack can override.
         "STAGING_LOCATION": {
             "name": "Staging location",
-            "description": "Default destination for picked reels (user picks and pick jobs).",
+            "description": "Default destination for picked reels (user picks and pick "
+                           "jobs). Used by every rack unless a rack overrides it.",
             "model": "stock.stocklocation",
         },
         "PULLED_LOCATION": {
             "name": "Pulled location",
             "description": "Destination for reels removed without a pick "
-                           "(anomaly reconciliation), so stock is never silently lost.",
+                           "(anomaly reconciliation), so stock is never silently lost. "
+                           "Used by every rack unless a rack overrides it.",
             "model": "stock.stocklocation",
         },
     }
@@ -73,6 +73,7 @@ class SmartReelPlugin(UserInterfaceMixin, UrlsMixin, SettingsMixin, InvenTreePlu
             path("api/v1/rack/slots/<int:slot_num>/clear", api.ClearView.as_view(), name="clear"),
             path("api/v1/barcode/resolve", api.ResolveView.as_view(), name="resolve"),
             path("api/v1/pickjobs", api.PickJobsView.as_view(), name="pickjobs"),
+            path("api/v1/racks", api.RacksView.as_view(), name="racks"),
             path("api/v1/pickjobs/from-build", api.JobView.as_view(), name="job-from-build"),
             path("api/v1/pickjobs/<str:job_id>", api.JobView.as_view(), name="job"),
             path("api/v1/pickjobs/<str:job_id>/items/<int:idx>/pick", api.JobItemPickView.as_view(), name="job-item-pick"),
@@ -101,20 +102,17 @@ class SmartReelPlugin(UserInterfaceMixin, UrlsMixin, SettingsMixin, InvenTreePlu
                 "context": {"build_id": target_id},
             })
 
+        # Provisioning panel on every stock-location page: any location can
+        # be designated a SmartReel rack and provisioned (multi-unit). The
+        # panel itself shows current status + a provision/rotate button.
         if target_model == "stocklocation" and target_id:
-            rack_pk = None
-            try:
-                rack_pk = int(self.get_setting("RACK_LOCATION") or 0)
-            except (TypeError, ValueError):
-                pass
-            if rack_pk and target_id == rack_pk:
-                panels.append({
-                    "key": "smartreel-provision",
-                    "title": "SmartReel HMI",
-                    "description": "Provision the SmartReel HMI (setup QR code)",
-                    "icon": "ti:qrcode:outline",
-                    "source": self.plugin_static_file("panel.js:renderProvisionPanel"),
-                    "context": {"rack_location_id": rack_pk},
-                })
+            panels.append({
+                "key": "smartreel-provision",
+                "title": "SmartReel HMI",
+                "description": "Provision a SmartReel HMI for this location (setup QR)",
+                "icon": "ti:qrcode:outline",
+                "source": self.plugin_static_file("panel.js:renderProvisionPanel"),
+                "context": {"location_id": target_id},
+            })
 
         return panels

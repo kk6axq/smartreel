@@ -4,12 +4,23 @@ Everything that touches InvenTree models lives here; api.py stays a thin
 HTTP layer. The wire shapes produced here are specified in
 docs/hmi-plugin-api.md (SmartReel repo) — keep them in sync with the mock.
 
+Multi-unit model
+----------------
+The plugin supports multiple independent SmartReel racks on one InvenTree
+instance. Each rack is a StockLocation tagged with
+metadata['smartreel'] = {"is_rack": true, "staging": <pk>?, "pulled": <pk>?}.
+Slots are child locations of a rack, tagged metadata['smartreel'] = {"slot": n}.
+
+A rack's identity rides on the HMI's API token: provisioning sets
+token.get_metadata('smartreel_rack') = <rack location pk>, so every
+rack-scoped request resolves its rack from request.auth — no rack id in
+the URL and no HMI/wire change. A token that isn't bound to a rack is
+rejected; every unit (including the first) is provisioned explicitly.
+
 Conventions:
-- "slot" is a physical position 1..N, modelled as a StockLocation child of
-  the configured rack location. Slot locations carry
-  metadata['smartreel'] = {'slot': n} so renames don't break the mapping.
 - Wire part ids are the part's IPN when set, else its pk as a string.
 - Picks are whole-reel transfers (StockItem.move), never quantity math.
+- Staging/pulled are per-rack (rack metadata) with a global-setting fallback.
 """
 from __future__ import annotations
 
@@ -20,7 +31,9 @@ from django.utils import timezone
 
 logger = logging.getLogger("inventree")
 
-METADATA_KEY = "smartreel"
+METADATA_KEY = "smartreel"          # on slot locations: {"slot": n}
+                                    # on rack locations: {"is_rack": true, "staging", "pulled"}
+TOKEN_RACK_KEY = "smartreel_rack"   # on an ApiToken: the rack location pk it controls
 OP_CACHE_TTL = 600  # seconds; mirrors the mock's idempotency window
 
 
@@ -49,11 +62,9 @@ def get_plugin():
     return registry.get_plugin("smartreel")
 
 
-def _location(setting_key: str):
-    """StockLocation referenced by a plugin setting, or None."""
+def _loc_by_pk(pk):
     from stock.models import StockLocation
 
-    pk = get_plugin().get_setting(setting_key)
     if not pk:
         return None
     try:
@@ -62,20 +73,17 @@ def _location(setting_key: str):
         return None
 
 
-def rack_location():
-    return _location("RACK_LOCATION")
-
-
-def staging_location():
-    return _location("STAGING_LOCATION")
-
-
-def pulled_location():
-    return _location("PULLED_LOCATION")
+def _location(setting_key: str):
+    """StockLocation referenced by a plugin setting, or None."""
+    return _loc_by_pk(get_plugin().get_setting(setting_key))
 
 
 class ConfigError(Exception):
     """A required plugin setting is missing/invalid. Maps to HTTP 409."""
+
+
+class SlotConflict(Exception):
+    """Maps to HTTP 409."""
 
 
 def require(loc, what: str):
@@ -88,14 +96,75 @@ def require(loc, what: str):
 
 
 # ---------------------------------------------------------------------------
-# Slot locations
+# Racks (multi-unit)
 # ---------------------------------------------------------------------------
 
-def slot_map() -> dict[int, object]:
-    """{slot_num: StockLocation} for every registered slot."""
+def is_rack_location(loc) -> bool:
+    if loc is None:
+        return False
+    meta = loc.get_metadata(METADATA_KEY) or {}
+    return bool(meta.get("is_rack"))
+
+
+def mark_rack(loc):
+    """Tag a location as a SmartReel rack (idempotent). Returns it."""
+    meta = loc.get_metadata(METADATA_KEY) or {}
+    if not meta.get("is_rack"):
+        meta["is_rack"] = True
+        loc.set_metadata(METADATA_KEY, meta)
+    return loc
+
+
+def list_rack_locations() -> list:
+    """Every SmartReel rack: locations tagged is_rack (i.e. provisioned)."""
     from stock.models import StockLocation
 
-    rack = rack_location()
+    out = []
+    for loc in StockLocation.objects.exclude(metadata__isnull=True):
+        meta = loc.get_metadata(METADATA_KEY) or {}
+        if meta.get("is_rack"):
+            out.append(loc)
+    return out
+
+
+def rack_info_list() -> list[dict]:
+    """Lightweight rack list for the web panel's rack selector."""
+    out = []
+    for rack in list_rack_locations():
+        out.append({
+            "location_id": rack.pk,
+            "name": rack.pathstring or rack.name,
+            "n_slots": len(slot_map(rack)),
+        })
+    out.sort(key=lambda r: r["name"])
+    return out
+
+
+def rack_for_token(token):
+    """Resolve the rack an HMI token is bound to, or None if unbound."""
+    if token is not None and hasattr(token, "get_metadata"):
+        return _loc_by_pk(token.get_metadata(TOKEN_RACK_KEY))
+    return None
+
+
+def staging_for(rack):
+    meta = rack.get_metadata(METADATA_KEY) or {}
+    return _loc_by_pk(meta.get("staging")) or _location("STAGING_LOCATION")
+
+
+def pulled_for(rack):
+    meta = rack.get_metadata(METADATA_KEY) or {}
+    return _loc_by_pk(meta.get("pulled")) or _location("PULLED_LOCATION")
+
+
+# ---------------------------------------------------------------------------
+# Slot locations (scoped to a rack)
+# ---------------------------------------------------------------------------
+
+def slot_map(rack) -> dict[int, object]:
+    """{slot_num: StockLocation} for every registered slot under `rack`."""
+    from stock.models import StockLocation
+
     if rack is None:
         return {}
     out: dict[int, object] = {}
@@ -107,12 +176,12 @@ def slot_map() -> dict[int, object]:
     return out
 
 
-def ensure_slots(n_slots: int, user=None) -> dict[int, object]:
-    """Create missing slot sub-locations 1..n_slots. Returns the full map."""
+def ensure_slots(rack, n_slots: int, user=None) -> dict[int, object]:
+    """Create missing slot sub-locations 1..n_slots under `rack`."""
     from stock.models import StockLocation
 
-    rack = require(rack_location(), "RACK_LOCATION")
-    existing = slot_map()
+    mark_rack(rack)   # registering implicitly designates the location a rack
+    existing = slot_map(rack)
     for n in range(1, n_slots + 1):
         if n in existing:
             continue
@@ -123,7 +192,7 @@ def ensure_slots(n_slots: int, user=None) -> dict[int, object]:
         )
         loc.set_metadata(METADATA_KEY, {"slot": n})
         existing[n] = loc
-        logger.info("smartreel: created slot location %s (pk=%s)", n, loc.pk)
+        logger.info("smartreel: rack %s created slot %s (pk=%s)", rack.pk, n, loc.pk)
     return existing
 
 
@@ -174,9 +243,8 @@ def render_part(part) -> dict:
     }
 
 
-def render_stock(item, slots: dict[int, object] | None = None) -> dict:
-    if slots is None:
-        slots = slot_map()
+def render_stock(item, slots: dict[int, object]) -> dict:
+    """`slots` is the requesting rack's slot map; slot_num is relative to it."""
     slot_num = None
     for n, loc in slots.items():
         if item.location_id == loc.pk:
@@ -200,12 +268,11 @@ def render_stock(item, slots: dict[int, object] | None = None) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Rack snapshot + slot ops
+# Rack snapshot + slot ops (all scoped to a resolved `rack`)
 # ---------------------------------------------------------------------------
 
-def rack_snapshot() -> dict:
-    rack = require(rack_location(), "RACK_LOCATION")
-    slots = slot_map()
+def rack_snapshot(rack) -> dict:
+    slots = slot_map(rack)
     out = []
     for n in sorted(slots):
         loc = slots[n]
@@ -215,7 +282,7 @@ def rack_snapshot() -> dict:
             "location_id": loc.pk,
             "stock": render_stock(item, slots) if item else None,
         })
-    jobs = [j for j in list_jobs() if j["status"] != "done"]
+    jobs = [j for j in list_jobs(rack) if j["status"] != "done"]
     return {
         "location_id": rack.pk,
         "n_slots": len(out),
@@ -224,10 +291,10 @@ def rack_snapshot() -> dict:
     }
 
 
-def assign_slot(slot_num: int, stock_item_id: int, user) -> dict:
+def assign_slot(rack, slot_num: int, stock_item_id: int, user) -> dict:
     from stock.models import StockItem
 
-    slots = slot_map()
+    slots = slot_map(rack)
     loc = slots.get(slot_num)
     if loc is None:
         raise LookupError(f"slot {slot_num} not found")
@@ -245,15 +312,9 @@ def assign_slot(slot_num: int, stock_item_id: int, user) -> dict:
     return {"slot": slot_num, "stock": render_stock(item, slots)}
 
 
-class SlotConflict(Exception):
-    """Maps to HTTP 409."""
-
-
-def pick_slot(slot_num: int, user, destination_id: int | None = None) -> dict:
+def pick_slot(rack, slot_num: int, user, destination_id: int | None = None) -> dict:
     """Whole-reel pick: transfer the slot's StockItem to the destination."""
-    from stock.models import StockLocation
-
-    slots = slot_map()
+    slots = slot_map(rack)
     loc = slots.get(slot_num)
     if loc is None:
         raise LookupError(f"slot {slot_num} not found")
@@ -262,20 +323,19 @@ def pick_slot(slot_num: int, user, destination_id: int | None = None) -> dict:
         raise SlotConflict(f"slot {slot_num} is empty")
 
     if destination_id:
-        try:
-            dest = StockLocation.objects.get(pk=destination_id)
-        except StockLocation.DoesNotExist:
+        dest = _loc_by_pk(destination_id)
+        if dest is None:
             raise LookupError(f"destination location {destination_id} not found")
     else:
-        dest = require(staging_location(), "STAGING_LOCATION")
+        dest = require(staging_for(rack), "STAGING_LOCATION")
 
     item.move(dest, "SmartReel: picked", user)
     return {"slot": slot_num, "stock_id": item.pk, "moved_to": dest.pk}
 
 
-def clear_slot(slot_num: int, user, reason: str | None = None) -> dict:
+def clear_slot(rack, slot_num: int, user, reason: str | None = None) -> dict:
     """Anomaly reconcile: move whatever is in the slot to the pulled bin."""
-    slots = slot_map()
+    slots = slot_map(rack)
     loc = slots.get(slot_num)
     if loc is None:
         raise LookupError(f"slot {slot_num} not found")
@@ -283,16 +343,16 @@ def clear_slot(slot_num: int, user, reason: str | None = None) -> dict:
     if item is None:
         return {"slot": slot_num, "stock_id": None, "moved_to": None}
 
-    dest = require(pulled_location(), "PULLED_LOCATION")
+    dest = require(pulled_for(rack), "PULLED_LOCATION")
     item.move(dest, f"SmartReel: cleared ({reason or 'unspecified'})", user)
     return {"slot": slot_num, "stock_id": item.pk, "moved_to": dest.pk}
 
 
-def locate_part(wire_id: str) -> dict:
+def locate_part(rack, wire_id: str) -> dict:
     part = part_by_wire_id(wire_id)
     if part is None:
         raise LookupError(f"part {wire_id} not found")
-    slots = slot_map()
+    slots = slot_map(rack)
     found = [
         n for n in sorted(slots)
         if (item := stock_in(slots[n])) and item.part_id == part.pk
@@ -301,18 +361,21 @@ def locate_part(wire_id: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Barcode resolution
+# Barcode resolution (rack only scopes the reported slot_num)
 # ---------------------------------------------------------------------------
 
-def resolve_barcode(code: str) -> dict:
+def resolve_barcode(rack, code: str) -> dict:
     """Resolve a scanned code via InvenTree's barcode plugin registry.
 
     Covers InvenTree-generated QR labels (JSON + INV-SI short form) and
-    custom codes linked to items at receival (barcode-hash match).
+    custom codes linked to items at receival (barcode-hash match). `rack`
+    (may be None) only determines whether the reported slot_num is filled.
     """
     from plugin import PluginMixinEnum, registry
     from part.models import Part
     from stock.models import StockItem, StockLocation
+
+    slots = slot_map(rack) if rack is not None else {}
 
     match = None
     for bplugin in registry.with_mixin(PluginMixinEnum.BARCODE):
@@ -337,7 +400,7 @@ def resolve_barcode(code: str) -> dict:
             item = StockItem.objects.get(pk=_pk(match["stockitem"]))
         except StockItem.DoesNotExist:
             return {"type": "unknown", "message": "Stock item no longer exists"}
-        return {"type": "stockitem", "stock": render_stock(item)}
+        return {"type": "stockitem", "stock": render_stock(item, slots)}
 
     if "part" in match:
         try:
@@ -354,7 +417,7 @@ def resolve_barcode(code: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Pick jobs (stored in BuildOrder metadata)
+# Pick jobs (stored in BuildOrder metadata, targeted at a specific rack)
 # ---------------------------------------------------------------------------
 
 def _job_builds():
@@ -389,12 +452,18 @@ def _located(part_pk: int, slots: dict[int, object]) -> list[int]:
     ]
 
 
-def render_job(build, job: dict, slots: dict[int, object] | None = None) -> dict:
-    if slots is None:
-        slots = slot_map()
+def _job_belongs_to(job: dict, rack) -> bool:
+    """A job targets `rack` iff its stored rack pk matches. Jobs without a
+    rack pk (e.g. created before multi-unit) belong to no rack — re-send
+    them from the build panel to assign a rack."""
+    return job.get("rack") == rack.pk
+
+
+def render_job(build, job: dict, slots: dict[int, object]) -> dict:
     return {
         "id": build.reference,
-        "build_id": build.pk,   # for the web panel; HMI ignores it
+        "build_id": build.pk,        # for the web panel; HMI ignores it
+        "rack_id": job.get("rack") or 0,
         "name": job.get("name") or build.title or build.reference,
         "requested_at": job.get("requested_at", ""),
         "status": job_status(job),
@@ -413,26 +482,36 @@ def render_job(build, job: dict, slots: dict[int, object] | None = None) -> dict
     }
 
 
-def list_jobs() -> list[dict]:
-    slots = slot_map()
-    return [render_job(b, j, slots) for b, j in _job_builds()]
+def list_jobs(rack) -> list[dict]:
+    """Jobs targeted at `rack`, with located_slots computed in its slots."""
+    slots = slot_map(rack)
+    return [render_job(b, j, slots) for b, j in _job_builds() if _job_belongs_to(j, rack)]
 
 
-def create_job_from_build(build, user, destination_id: int | None = None) -> dict:
-    """Create (or replace) the SmartReel pick job for a build order.
+def all_jobs() -> list[dict]:
+    """Every job across all racks (web panel; located_slots within each job's rack)."""
+    out = []
+    for b, j in _job_builds():
+        rack = _loc_by_pk(j.get("rack"))
+        slots = slot_map(rack) if rack is not None else {}
+        out.append(render_job(b, j, slots))
+    return out
 
-    One item per build line; parts not currently in the rack still get an
+
+def create_job_from_build(build, user, rack, destination_id: int | None = None) -> dict:
+    """Create (or replace) the SmartReel pick job for a build order, targeted
+    at `rack`. One item per build line; parts not in the rack still get an
     item (located_slots comes back empty → HMI shows them unfulfillable).
     """
-    dest = None
-    if destination_id:
-        from stock.models import StockLocation
+    if rack is None:
+        raise ConfigError("no SmartReel rack selected for this job")
 
-        dest = StockLocation.objects.filter(pk=destination_id).first()
+    if destination_id:
+        dest = _loc_by_pk(destination_id)
         if dest is None:
             raise LookupError(f"destination location {destination_id} not found")
     else:
-        dest = require(staging_location(), "STAGING_LOCATION")
+        dest = require(staging_for(rack), "STAGING_LOCATION")
 
     items = []
     for line in build.build_lines.all().select_related("bom_item__sub_part"):
@@ -450,13 +529,14 @@ def create_job_from_build(build, user, destination_id: int | None = None) -> dic
 
     job = {
         "name": f"{build.part.name} x {int(build.quantity)}",
+        "rack": rack.pk,
         "requested_at": timezone.now().isoformat(timespec="seconds"),
         "requested_by": getattr(user, "username", ""),
         "destination_id": dest.pk,
         "items": items,
     }
     build.set_metadata(METADATA_KEY, job)
-    return render_job(build, job)
+    return render_job(build, job, slot_map(rack))
 
 
 def delete_job(reference: str) -> bool:
@@ -472,18 +552,20 @@ def delete_job(reference: str) -> bool:
     return True
 
 
-def pick_job_item(reference: str, idx: int, slot_num: int, user) -> dict:
+def pick_job_item(rack, reference: str, idx: int, slot_num: int, user) -> dict:
     build = _build_by_reference(reference)
     job = (build.metadata or {}).get(METADATA_KEY) if build else None
     if not job:
         raise LookupError(f"job {reference} not found")
+    if not _job_belongs_to(job, rack):
+        raise SlotConflict(f"job {reference} is not assigned to this rack")
     if idx < 0 or idx >= len(job["items"]):
         raise LookupError(f"item idx {idx} out of bounds")
     item_meta = job["items"][idx]
     if item_meta["picked"]:
         raise SlotConflict(f"item {idx} already picked")
 
-    slots = slot_map()
+    slots = slot_map(rack)
     loc = slots.get(slot_num)
     if loc is None:
         raise LookupError(f"slot {slot_num} not found")
@@ -496,7 +578,7 @@ def pick_job_item(reference: str, idx: int, slot_num: int, user) -> dict:
             f"item needs {item_meta['part_id']}"
         )
 
-    result = pick_slot(slot_num, user, destination_id=job.get("destination_id"))
+    result = pick_slot(rack, slot_num, user, destination_id=job.get("destination_id"))
 
     item_meta["picked"] = True
     item_meta["picked_stock"] = result["stock_id"]
@@ -510,15 +592,14 @@ def pick_job_item(reference: str, idx: int, slot_num: int, user) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Anomaly log (kept on the rack location's metadata, capped)
+# Anomaly log (kept per-rack on the rack location's metadata, capped)
 # ---------------------------------------------------------------------------
 
 ANOMALY_LOG_KEY = "smartreel_anomalies"
 ANOMALY_LOG_CAP = 200
 
 
-def log_anomaly(kind: str, slot_num: int | None, detail: str) -> dict:
-    rack = require(rack_location(), "RACK_LOCATION")
+def log_anomaly(rack, kind: str, slot_num: int | None, detail: str) -> dict:
     log = rack.get_metadata(ANOMALY_LOG_KEY) or []
     next_id = (log[-1]["id"] + 1) if log else 1
     entry = {
@@ -530,5 +611,6 @@ def log_anomaly(kind: str, slot_num: int | None, detail: str) -> dict:
     }
     log.append(entry)
     rack.set_metadata(ANOMALY_LOG_KEY, log[-ANOMALY_LOG_CAP:])
-    logger.warning("smartreel anomaly: %s slot=%s %s", kind, slot_num, detail)
+    logger.warning("smartreel anomaly: rack=%s %s slot=%s %s",
+                   rack.pk, kind, slot_num, detail)
     return {"id": next_id, "logged": True}

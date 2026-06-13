@@ -110,12 +110,24 @@ def main():
     pulled_pk = ensure_location("Pulled")
     inbox_pk = ensure_location("Receiving Inbox")
 
-    for key, val in (("RACK_LOCATION", rack_pk),
-                     ("STAGING_LOCATION", staging_pk),
+    for key, val in (("STAGING_LOCATION", staging_pk),
                      ("PULLED_LOCATION", pulled_pk)):
         st, d = req("PATCH", f"/api/plugins/smartreel/settings/{key}/",
                     {"value": str(val)}, token=tok)
         check(f"setting {key}", st == 200, str(d))
+
+    # Provision the rack -> a token bound to it (rtok). Every rack-scoped
+    # plugin call below uses rtok, exactly as the HMI does. (No global
+    # rack fallback: an unbound token is rejected.)
+    st, d = req("GET", f"{P}/provision?location={rack_pk}&rotate=1", token=tok)
+    check("provision rack", st == 200
+          and d.get("rack", {}).get("location_id") == rack_pk
+          and str(d.get("payload", "")).startswith("SRPROV1:"), str(d)[:200])
+    check("provision QR svg", bool(d.get("svg")), "no qrcode lib in container?")
+    rtok = json.loads(d["payload"].split("SRPROV1:")[1])["t"]
+    # An unbound token (the plain admin token) must be refused.
+    st, d = req("GET", f"{P}/rack", token=tok)
+    check("unbound token refused (409)", st == 409, str(st))
 
     # ---- seed: parts ----
     def ensure_part(name, ipn, **extra):
@@ -170,10 +182,10 @@ def main():
     # =====================================================================
     run = str(int(time.time()))
 
-    st, d = req("POST", f"{P}/rack/register", {"n_slots": 8, "op_id": f"t-{run}-reg"}, token=tok)
+    st, d = req("POST", f"{P}/rack/register", {"n_slots": 8, "op_id": f"t-{run}-reg"}, token=rtok)
     check("register 8 slots", st == 200 and len(d.get("slot_locations", [])) >= 8, str(d))
 
-    st, d = req("GET", f"{P}/rack", token=tok)
+    st, d = req("GET", f"{P}/rack", token=rtok)
     check("rack snapshot", st == 200 and d.get("location_id") == rack_pk
           and d.get("n_slots", 0) >= 8, str(d))
     empty_slots = [s["slot"] for s in d.get("slots", []) if not s["stock"]]
@@ -182,66 +194,68 @@ def main():
 
     # resolve: InvenTree-generated json barcode for stock item A
     code = json.dumps({"stockitem": si_a})
-    st, d = req("POST", f"{P}/barcode/resolve", {"code": code}, token=tok)
+    st, d = req("POST", f"{P}/barcode/resolve", {"code": code}, token=rtok)
     check("resolve stockitem QR", st == 200 and d.get("type") == "stockitem"
           and d["stock"]["id"] == si_a and d["stock"]["slot_num"] is None, str(d))
 
     # resolve unknown
-    st, d = req("POST", f"{P}/barcode/resolve", {"code": "garbage-xyz-123"}, token=tok)
+    st, d = req("POST", f"{P}/barcode/resolve", {"code": "garbage-xyz-123"}, token=rtok)
     check("resolve unknown", st == 200 and d.get("type") == "unknown", str(d))
 
     # assign A to slot s1
     st, d = req("POST", f"{P}/rack/slots/{s1}/assign",
-                {"stock_item_id": si_a, "op_id": f"t-{run}-as1"}, token=tok)
+                {"stock_item_id": si_a, "op_id": f"t-{run}-as1"}, token=rtok)
     check("assign A→slot", st == 200 and d.get("slot") == s1
           and d["stock"]["id"] == si_a, str(d))
 
     # conflict: B into same slot
     st, d = req("POST", f"{P}/rack/slots/{s1}/assign",
-                {"stock_item_id": si_b, "op_id": f"t-{run}-as2"}, token=tok)
+                {"stock_item_id": si_b, "op_id": f"t-{run}-as2"}, token=rtok)
     check("assign conflict 409", st == 409, str(d))
 
     # resolve A again: now reports its slot
-    st, d = req("POST", f"{P}/barcode/resolve", {"code": code}, token=tok)
+    st, d = req("POST", f"{P}/barcode/resolve", {"code": code}, token=rtok)
     check("resolve shows slot_num", st == 200 and d["stock"]["slot_num"] == s1, str(d))
 
     # whole-reel pick from s1 → staging
-    st, d = req("POST", f"{P}/rack/slots/{s1}/pick", {"op_id": f"t-{run}-p1"}, token=tok)
+    st, d = req("POST", f"{P}/rack/slots/{s1}/pick", {"op_id": f"t-{run}-p1"}, token=rtok)
     check("pick → staging", st == 200 and d.get("moved_to") == staging_pk
           and d.get("stock_id") == si_a, str(d))
     st, d = req("GET", f"/api/stock/{si_a}/", token=tok)
     check("stock A really moved", st == 200 and d.get("location") == staging_pk, str(d))
     # idempotent replay
-    st, d = req("POST", f"{P}/rack/slots/{s1}/pick", {"op_id": f"t-{run}-p1"}, token=tok)
+    st, d = req("POST", f"{P}/rack/slots/{s1}/pick", {"op_id": f"t-{run}-p1"}, token=rtok)
     check("pick op_id replay", st == 200 and d.get("stock_id") == si_a, str(d))
     # picking the now-empty slot with a new op_id → 409
-    st, d = req("POST", f"{P}/rack/slots/{s1}/pick", {"op_id": f"t-{run}-p2"}, token=tok)
+    st, d = req("POST", f"{P}/rack/slots/{s1}/pick", {"op_id": f"t-{run}-p2"}, token=rtok)
     check("pick empty slot 409", st == 409, str(d))
 
     # clear: B into s2, then clear → pulled
     st, d = req("POST", f"{P}/rack/slots/{s2}/assign",
-                {"stock_item_id": si_b, "op_id": f"t-{run}-as3"}, token=tok)
+                {"stock_item_id": si_b, "op_id": f"t-{run}-as3"}, token=rtok)
     check("assign B→slot2", st == 200, str(d))
     st, d = req("POST", f"{P}/rack/slots/{s2}/clear",
-                {"op_id": f"t-{run}-c1", "reason": "anomaly:removed"}, token=tok)
+                {"op_id": f"t-{run}-c1", "reason": "anomaly:removed"}, token=rtok)
     check("clear → pulled", st == 200 and d.get("moved_to") == pulled_pk, str(d))
     st, d = req("POST", f"{P}/rack/slots/{s2}/clear",
-                {"op_id": f"t-{run}-c2", "reason": "anomaly:removed"}, token=tok)
+                {"op_id": f"t-{run}-c2", "reason": "anomaly:removed"}, token=rtok)
     check("clear empty idempotent", st == 200 and d.get("stock_id") is None, str(d))
 
-    # pick job from build
+    # pick job from build (web-panel endpoint: explicit target rack)
     st, d = req("POST", f"{P}/pickjobs/from-build",
-                {"build_id": build_pk, "op_id": f"t-{run}-fb"}, token=tok)
+                {"build_id": build_pk, "rack_location_id": rack_pk,
+                 "op_id": f"t-{run}-fb"}, token=tok)
     check("from-build", st == 200 and d.get("id") == build_ref
+          and d.get("rack_id") == rack_pk
           and len(d.get("items", [])) == 2 and d.get("status") == "pending", str(d))
 
     # stock a reel of r10k into a slot so item 0 becomes locatable
     si_c = new_stock(r10k, 3000)
     st, d = req("POST", f"{P}/rack/slots/{s1}/assign",
-                {"stock_item_id": si_c, "op_id": f"t-{run}-as4"}, token=tok)
+                {"stock_item_id": si_c, "op_id": f"t-{run}-as4"}, token=rtok)
     check("assign C→slot1", st == 200, str(d))
 
-    st, d = req("GET", f"{P}/pickjobs", token=tok)
+    st, d = req("GET", f"{P}/pickjobs", token=rtok)
     jobs = d.get("jobs", [])
     job = next((j for j in jobs if j["id"] == build_ref), None)
     check("pickjobs lists job", job is not None, str(d)[:300])
@@ -250,32 +264,26 @@ def main():
 
     # wrong-slot pick → 409 (slot1 holds r10k; item 1 wants c100n)
     st, d = req("POST", f"{P}/pickjobs/{build_ref}/items/1/pick",
-                {"slot_num": s1, "op_id": f"t-{run}-jp0"}, token=tok)
+                {"slot_num": s1, "op_id": f"t-{run}-jp0"}, token=rtok)
     check("job pick wrong part 409", st == 409, str(d))
 
     # correct pick
     st, d = req("POST", f"{P}/pickjobs/{build_ref}/items/0/pick",
-                {"slot_num": s1, "op_id": f"t-{run}-jp1"}, token=tok)
+                {"slot_num": s1, "op_id": f"t-{run}-jp1"}, token=rtok)
     check("job item pick", st == 200 and d["item"]["picked"] is True
           and d["job_status"] == "partial", str(d))
     st, d = req("GET", f"/api/stock/{si_c}/", token=tok)
     check("job-picked reel in staging", d.get("location") == staging_pk, str(d))
 
     # locate
-    st, d = req("GET", f"{P}/parts/locate?part_id=R-10K-0805", token=tok)
+    st, d = req("GET", f"{P}/parts/locate?part_id=R-10K-0805", token=rtok)
     check("locate", st == 200 and d.get("part_id") == "R-10K-0805", str(d))
 
     # anomaly
     st, d = req("POST", f"{P}/anomaly",
                 {"kind": "removed", "slot_num": s2, "detail": "test yank",
-                 "op_id": f"t-{run}-an1"}, token=tok)
+                 "op_id": f"t-{run}-an1"}, token=rtok)
     check("anomaly logged", st == 200 and d.get("logged") is True, str(d))
-
-    # provision
-    st, d = req("GET", f"{P}/provision", token=tok)
-    check("provision payload", st == 200
-          and str(d.get("payload", "")).startswith("SRPROV1:"), str(d)[:200])
-    check("provision QR svg", bool(d.get("svg")), "no qrcode lib in container?")
 
     # auth: no token → 401/403
     st, d = req("GET", f"{P}/rack")
