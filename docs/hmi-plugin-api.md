@@ -260,8 +260,40 @@ provisioning works the same way.
 | Staging location | default destination for picked reels |
 | Pulled location | destination for anomaly `/clear` removals |
 
+## Future work: multiple SmartReel units (NOT yet supported)
+
+The plugin is currently **single-rack**: one global `RACK_LOCATION` /
+`STAGING_LOCATION` / `PULLED_LOCATION`, and every endpoint resolves
+through that one location. Many HMIs can point at the plugin, but they
+all share the one rack. We need to support **multiple independent
+SmartReel racks** on one InvenTree instance.
+
+Planned approach (server-side only — no HMI or wire-protocol change,
+since each unit already has its own URL + token):
+
+- Each unit is its own rack `StockLocation`, tagged
+  `metadata['smartreel'] = { is_rack, staging_loc, pulled_loc }`
+  (staging/pulled per-rack, falling back to the global settings).
+- **Bind the API token to its rack**: `ApiToken` is a `MetadataMixin`,
+  so provisioning sets `token.set_metadata('smartreel_rack', <loc_pk>)`.
+  Each request resolves its rack from `request.auth` — no rack id needed
+  in the URL or from the HMI.
+- Replace `services.rack_location()` with `rack_for(request)`; everything
+  downstream (`slot_map`, snapshot, assign/pick/clear, register) keys off
+  it. `/health` and `/barcode/resolve` stay rack-independent.
+- Pick jobs store a target rack pk; `GET /pickjobs` and `located_slots`
+  filter to the requesting token's rack. The Build Order "Send to
+  SmartReel" panel gains a rack selector.
+- Provisioning panel moves onto each rack location's page (already a
+  location-page panel, so it scales naturally).
+
+Open decision: staging/pulled shared across racks vs. per-rack
+(leaning per-rack with a global fallback).
+
 ## Changelog
 
+- **2026-06-13**: noted multi-unit support as future work (see above);
+  plugin is single-rack for now.
 - **2026-06-11**: rewritten against `docs/user-stories.md`. Picks are
   whole-reel transfers (qty decrement model removed); pick jobs come
   from build orders with derived `pending/partial/done` status; rack
