@@ -436,7 +436,11 @@ static void handle_divider_change(uint8_t port, uint8_t module,
             if (!changed) continue;
             const bool expect_present = !div.is_pulled(port, module, (uint8_t)s);
             const bool live_present   = app::divider_present_bit(now, s);
-            if (expect_present && !live_present) {
+            // DividerMissing: a committed divider was pulled out.
+            // DividerExtra:   an unexpected divider was inserted.
+            // validate_topology() reports both; flag either as the same
+            // divider-mismatch anomaly so the operator restores the layout.
+            if (expect_present != live_present) {
                 ui::anomaly_modal_raise(app::AnomalyKind::Divider);
                 return;
             }

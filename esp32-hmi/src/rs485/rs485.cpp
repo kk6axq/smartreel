@@ -190,6 +190,9 @@ Status transact(uint8_t addr, uint8_t type,
     if (!s_inited) return Status::NotReady;
     if (payload_len > MAX_PAYLOAD) return Status::BufferTooSmall;
 
+    // MAX_FRAME_BYTES (777) is too large to put on the rs485-poll task's
+    // 4 KB stack, so keep it static. Safe only because the caller holds
+    // s_bus_mutex for the entire call; never call re-entrantly.
     static uint8_t tx_buf[MAX_FRAME_BYTES];
     Status result = Status::Timeout;
 
@@ -375,12 +378,15 @@ Status init() {
 
     s_inited = true;
 
-    // Lower priority than the LVGL task (2) so UI stays smooth even
-    // under heavy bus chatter.
+    // Pinned to APP_CPU (never PRO_CPU): PRO_CPU runs the RGB LCD DMA
+    // refresh, and this task polls the bus continuously + decodes frames,
+    // which would contend for the CPU / PSRAM bandwidth and starve the
+    // DMA bounce buffer (visible tearing). Priority 1 -- below the LVGL
+    // task (2) -- so the UI stays smooth even under heavy bus chatter.
     xTaskCreatePinnedToCore(poll_task, "rs485-poll",
                             4 * 1024, nullptr,
                             /*priority=*/1, &s_poll_task,
-                            PRO_CPU_NUM);
+                            APP_CPU_NUM);
     return Status::Ok;
 }
 
@@ -524,7 +530,12 @@ Status set_reel_pixels(uint8_t reel_id, uint16_t start_idx,
                        const uint8_t* rgb_triples, size_t triple_count,
                        uint8_t addr) {
     if (triple_count == 0) return Status::Ok;
+    // The count field on the wire is 1 byte, so it can hold at most 255.
+    if (triple_count > 255) return Status::BufferTooSmall;
     // Payload: reel_id, start_h, start_l, count, R,G,B,...
+    // MAX_PAYLOAD (768) is too large to put on the rs485-poll task's 4 KB
+    // stack, so keep it static. Safe only because the caller holds
+    // s_bus_mutex for the entire call; never call re-entrantly.
     static uint8_t buf[MAX_PAYLOAD];
     const size_t bytes = triple_count * 3;
     if (4 + bytes > sizeof(buf)) return Status::BufferTooSmall;
@@ -549,7 +560,8 @@ Status set_brightness(uint8_t reel_id, uint8_t brightness, uint8_t addr) {
 Status set_animation(uint8_t reel_id, uint8_t anim_id,
                      const uint8_t* params, size_t params_len,
                      uint8_t addr) {
-    static uint8_t buf[64];
+    // Small enough (64 B) to live on the caller's stack -- no shared static.
+    uint8_t buf[64];
     if (2 + params_len > sizeof(buf)) return Status::BufferTooSmall;
     buf[0] = reel_id;
     buf[1] = anim_id;

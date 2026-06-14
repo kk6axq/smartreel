@@ -272,11 +272,23 @@ void apply_rack_result(void* user) {
     bool changed = false;
     for (int i = 0; i < rr->n_slots; ++i) {
         const inv_api::RackSlot& srv = rr->slots[i];
+
+        // Hold the lock across the shared-state reads (slot_by_num's scan of
+        // st.rack, the slot->state/part/qty reads, and any mutation) so we
+        // never tear against the state_store writer task snapshotting under
+        // the same mutex. Decisions are computed here, then acted on (logging,
+        // dirty-marking, LEDs, anomaly) AFTER unlock to keep the critical
+        // section minimal and avoid holding the lock across slow/blocking work
+        // (raise_moved_anomaly re-takes app::lock(), so it must run unlocked).
+        bool did_adopt = false, did_moved = false, did_clearlocal = false;
+        app::lock();
         app::Slot* slot = app::slot_by_num(srv.slot);
-        if (!slot) continue;                       // not an anchor of a logical slot
+        if (!slot) { app::unlock(); continue; }    // not an anchor of a logical slot
         if (slot->state == app::SlotState::TARGET ||
-            slot->state == app::SlotState::PICKED)
+            slot->state == app::SlotState::PICKED) {
+            app::unlock();
             continue;                              // active workflow owns it
+        }
 
         const bool present = have_physical && slot_physically_present(*slot);
 
@@ -289,16 +301,10 @@ void apply_rack_result(void* user) {
             set_confirmed(srv.slot, true);
             if (!slot->part.valid || slot->qty != srv.qty ||
                 strcmp(slot->part.id, srv.part.id) != 0) {
-                app::lock();
                 copy_part(slot->part, srv.part);
                 slot->qty   = srv.qty;
                 slot->state = app::SlotState::OCCUPIED;
-                app::unlock();
-                state_store::mark_slot_dirty(srv.slot);
-                SR_LOG("reconcile slot=%d adopt %s qty=%d (present=%d)",
-                       srv.slot, srv.part.id, srv.qty, present);
-                n_adopt++;
-                changed = true;
+                did_adopt = true;
             }
         } else if (slot->part.valid && is_confirmed(srv.slot)) {
             // Server PREVIOUSLY confirmed this reel and now reports the slot
@@ -307,26 +313,40 @@ void apply_rack_result(void* user) {
             // tell the user to remove it (user-stories.md). Confirmed-gate
             // keeps this off a just-placed/unsynced reel.
             set_confirmed(srv.slot, false);
-            app::lock();
             slot->part.valid = false;
             slot->qty        = 0;
             slot->state      = present ? app::SlotState::WARN : app::SlotState::EMPTY;
-            app::unlock();
-            state_store::mark_slot_dirty(srv.slot);
-            if (present) {
-                leds::light_slot(srv.slot, 0xF5, 0x9E, 0x0B);   // amber: remove me
-                raise_moved_anomaly(srv.slot);
-                SR_LOG("reconcile slot=%d MOVED in InvenTree, still present -> remove", srv.slot);
-                n_moved++;
-            } else {
-                SR_LOG("reconcile slot=%d gone from InvenTree and absent -> clear local", srv.slot);
-                n_clearlocal++;
-            }
-            changed = true;
+            if (present) did_moved = true;
+            else         did_clearlocal = true;
         }
         // server empty + local part NOT confirmed: a locally-placed reel the
         // server hasn't acknowledged yet (assign pending / unsynced). Leave
         // it — the assign op syncs it, then a later reconcile confirms it.
+        app::unlock();
+
+        // Side effects, outside the lock.
+        if (did_adopt) {
+            state_store::mark_slot_dirty(srv.slot);
+            SR_LOG("reconcile slot=%d adopt %s qty=%d (present=%d)",
+                   srv.slot, srv.part.id, srv.qty, present);
+            n_adopt++;
+            changed = true;
+        } else if (did_moved) {
+            state_store::mark_slot_dirty(srv.slot);
+            leds::light_slot(srv.slot, 0xF5, 0x9E, 0x0B);   // amber: remove me
+            raise_moved_anomaly(srv.slot);
+            // Record the move in InvenTree's anomaly log too (mirrors the
+            // hardware-removal path in main.cpp), not just the local modal.
+            inv_sync::queue_anomaly("moved", srv.slot, "stock moved in InvenTree, still present");
+            SR_LOG("reconcile slot=%d MOVED in InvenTree, still present -> remove", srv.slot);
+            n_moved++;
+            changed = true;
+        } else if (did_clearlocal) {
+            state_store::mark_slot_dirty(srv.slot);
+            SR_LOG("reconcile slot=%d gone from InvenTree and absent -> clear local", srv.slot);
+            n_clearlocal++;
+            changed = true;
+        }
     }
 
     SR_LOG("reconcile: %d slots (%d server-occupied) adopt=%d moved=%d cleared-local=%d phys=%d",
@@ -347,13 +367,16 @@ void apply_jobs_result(void* user) {
     auto& st = app::state();
 
     // Never reshape the job list under an active job: indices would
-    // shift mid-pick. The list refreshes on the next screen entry.
+    // shift mid-pick. The list refreshes on the next screen entry. Read
+    // active_pick_idx under the lock -- it is mutated by other state
+    // mutators (e.g. mock_start_pick) holding the same mutex.
+    app::lock();
     if (st.active_pick_idx >= 0) {
+        app::unlock();
         delete jr;
         return;
     }
 
-    app::lock();
     st.n_pick_jobs = 0;
     for (int i = 0; i < jr->n_jobs && st.n_pick_jobs < app::MAX_PICK_JOBS; ++i) {
         const inv_api::PickJobInfo& src = jr->jobs[i];
@@ -377,10 +400,13 @@ void apply_jobs_result(void* user) {
             it.slot_num = 0;     // resolved against the local rack below
         }
     }
-    app::unlock();
 
+    // Still under the lock: resolve_pick_locations() scans st.rack (via
+    // find_part) and writes st.pick_jobs[].items[].slot_num, so it must run
+    // inside the same critical section (matches mock_start_pick()).
     for (int i = 0; i < st.n_pick_jobs; ++i)
         app::resolve_pick_locations(st.pick_jobs[i]);
+    app::unlock();
 
     state_store::mark_jobs_dirty();
     if (ui::current() == ui::Screen::PickList) ui::rebuild_current();

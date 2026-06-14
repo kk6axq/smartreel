@@ -195,11 +195,16 @@ bool start_writer() {
     s_pending_mtx = xSemaphoreCreateMutex();
     if (!s_writer_sem || !s_pending_mtx) return false;
 
+    // Pinned to APP_CPU (never PRO_CPU): PRO_CPU runs the RGB LCD DMA
+    // refresh. This task snapshots app::state() out of PSRAM and does
+    // bursty SD writes; on PRO_CPU that contends for PSRAM bandwidth and
+    // starves the DMA bounce buffer (visible tearing). Priority 1, below
+    // the LVGL task (2).
     BaseType_t ok = xTaskCreatePinnedToCore(
         writer_task, "state-writer",
         8 * 1024, nullptr,          // FATFS write depth + JSON; headroom
         /*priority=*/1, &s_writer_task,
-        PRO_CPU_NUM);
+        APP_CPU_NUM);
     return ok == pdPASS;
 }
 

@@ -299,12 +299,19 @@ ResolveResult resolve_barcode(const char* code, const char* op_id) {
         return r;
     }
 
-    char body_buf[160];
+    // Sized for a long QR/DataMatrix payload plus the op_id; checked for
+    // truncation so an oversized code fails cleanly instead of sending a
+    // malformed JSON body that the server would reject anyway.
+    char body_buf[320];
     {
         JsonDocument req;
         req["code"] = code;
         if (op_id && op_id[0]) req["op_id"] = op_id;
-        serializeJson(req, body_buf, sizeof(body_buf));
+        if (serializeJson(req, body_buf, sizeof(body_buf)) >= sizeof(body_buf)) {
+            r.status = Status::BadStatus;
+            snprintf(r.error, sizeof(r.error), "scanned code too long");
+            return r;
+        }
     }
 
     String body;

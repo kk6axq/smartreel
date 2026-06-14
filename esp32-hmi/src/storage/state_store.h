@@ -17,7 +17,8 @@
 //      signal the writer semaphore -- they do NOT block on I/O.
 //
 //      A dedicated writer task (state_store_writer, priority 1 on
-//      PRO_CPU) wakes on the semaphore, debounces 250 ms to coalesce
+//      APP_CPU -- never PRO_CPU, which runs the RGB LCD DMA) wakes on
+//      the semaphore, debounces 250 ms to coalesce
 //      bursts, then snapshots app::state() under the app::lock()
 //      mutex, releases the lock, and serialises the snapshot to JSON
 //      at leisure before doing the atomic SD write.

@@ -124,8 +124,12 @@ static void on_confirm_btn(lv_event_t* e) {
     if (idx != 1) return;   // not "Update"
     show_progress_modal(s_target_hmi ? "Updating HMI firmware..."
                                      : "Updating Core over RS485...");
-    xTaskCreate(fw_worker, "fw-upd", 8192,
-                (void*)(intptr_t)(s_target_hmi ? 1 : 0), 1, nullptr);
+    // Pinned to APP_CPU (never PRO_CPU): the worker does heavy SD reads
+    // and OTA / RS485 flash writes; PRO_CPU runs the RGB LCD DMA and any
+    // bandwidth contention there causes tearing.
+    xTaskCreatePinnedToCore(fw_worker, "fw-upd", 8192,
+                            (void*)(intptr_t)(s_target_hmi ? 1 : 0), 1,
+                            nullptr, APP_CPU_NUM);
 }
 
 static void show_confirm(bool hmi) {
@@ -301,7 +305,11 @@ void build_config_fwupdate(lv_obj_t* body) {
                 memcpy(j->proj[i],  s_sd_proj[i],  sizeof(j->proj[0]));
                 j->kb[i] = s_sd_kb[i];
             }
-            xTaskCreate(sd_scan_worker, "sd-ver", 4096, j, 1, nullptr);
+            // Pinned to APP_CPU (never PRO_CPU): reads image headers off
+            // the SD card; keep that PSRAM/SD traffic off the core that
+            // runs the RGB LCD DMA to avoid tearing.
+            xTaskCreatePinnedToCore(sd_scan_worker, "sd-ver", 4096, j, 1,
+                                    nullptr, APP_CPU_NUM);
         }
     }
 }
