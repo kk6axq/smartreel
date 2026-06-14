@@ -33,7 +33,6 @@ for detail and history but are not the authoritative manual:
   catalog lists firmware messages under category `0xF_`; the **code implements
   them at `0x30`–`0x35`** (see API reference for why).
 - `user-stories.md` — the behavioural source of truth for the workflows.
-- `roadmap.md` — project plan and history.
 - `known-bugs.md` — open and fixed issues.
 - `test-plan.md` — verification plan.
 

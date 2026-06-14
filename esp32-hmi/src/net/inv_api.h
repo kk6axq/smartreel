@@ -1,14 +1,14 @@
 // =====================================================================
 //  InvenTree plugin HTTP client.
 //
-//  Talks to the SmartReel mock-inventree server (mock-inventree/ in this
-//  repo) over HTTP or HTTPS. URL + token come from config_store; an
+//  Talks to the SmartReel mock-inventree server (debug-fw/mock-inventree/
+//  in this repo) over HTTP or HTTPS. URL + token come from config_store; an
 //  empty URL or token means "not configured" and every call returns
 //  Status::NotConfigured without touching the network.
 //
 //  HTTPS uses NetworkClientSecure with setInsecure() for now -- the mock
 //  uses a self-signed cert and pinning is a follow-up. The server's
-//  fingerprint is printed by mock-inventree/gen-cert.sh if you want to
+//  fingerprint is printed by debug-fw/mock-inventree/gen-cert.sh if you want to
 //  do the pinning today by hand.
 //
 //  All public functions here are SYNCHRONOUS and BLOCKING. They must

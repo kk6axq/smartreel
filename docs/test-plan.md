@@ -123,10 +123,8 @@ Offline behaviour (connectivity story):
   Start/Resume. Find (LED locate) still works.
 - ☐ Restart the mock.
   **PASS:** pill returns ONLINE within ~15 s without touching the HMI.
-- ☐ Retry queue: with the mock stopped, do a LOAD via the offline SD
-  catalog — confirm it stays local (no crash). Then (mock running) do a
-  load + immediately kill the mock before the assign lands; restart the
-  mock within a minute.
+- ☐ Retry queue: with the mock running, do a load + immediately kill the
+  mock before the assign lands; restart the mock within a minute.
   **PASS:** the dashboard eventually shows the assign (op queue retried).
 
 ## Phase 3 — HMI ⇄ real InvenTree (~30 min)

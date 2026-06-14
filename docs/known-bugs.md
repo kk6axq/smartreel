@@ -5,6 +5,22 @@ or as we learn more.
 
 ---
 
+## HMI: TLS certificate not verified (cert pinning parsed but not enforced)
+
+The HMI's InvenTree client calls `NetworkClientSecure::setInsecure()`
+(`esp32-hmi/src/net/inv_api.cpp`), so it does **not** verify the server's
+certificate. The provisioning payload (`SRPROV1:`) carries a fingerprint
+field (`f`) that the HMI parses but currently ignores. HTTPS traffic is
+therefore encrypted but not authenticated — a man-in-the-middle on the LAN
+could impersonate the InvenTree/plugin server. Acceptable on the bench (the
+mock uses a self-signed cert); **must be fixed before any real deployment**
+by enforcing the pinned fingerprint from the provisioning payload (the
+server's fingerprint is printed by `debug-fw/mock-inventree/gen-cert.sh`).
+
+**Filed**: 2026-06-13.
+
+---
+
 ## HMI: pick-job `status` not persisted across reboot (cache only)
 
 `state_store` writes pick jobs to `/sdcard/jobs.json` but does **not**
