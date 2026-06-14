@@ -12,12 +12,12 @@ Ports are auto-detected by USB vendor ID, so it doesn't matter which
     ESP32-S3 USB-JTAG   VID 303a   -> "hmi"   (the bus master, tailed)
 
 Usage:
-    tools/inject.py                       # interactive console (+ HMI tail)
-    tools/inject.py insert 0 1650         # one-shot: send a command, report, exit
-    tools/inject.py --list                # show detected ports and exit
-    tools/inject.py --core /dev/ttyACM1   # override core port autodetect
-    tools/inject.py --hmi  /dev/ttyACM0   # override hmi port autodetect
-    tools/inject.py --no-hmi              # don't open/tail the HMI
+    debug-fw/inject.py                       # interactive console (+ HMI tail)
+    debug-fw/inject.py insert 0 1650         # one-shot: send a command, report, exit
+    debug-fw/inject.py --list                # show detected ports and exit
+    debug-fw/inject.py --core /dev/ttyACM1   # override core port autodetect
+    debug-fw/inject.py --hmi  /dev/ttyACM0   # override hmi port autodetect
+    debug-fw/inject.py --no-hmi              # don't open/tail the HMI
 
 Event commands (passed straight through to the core console; type 'help'
 on the core for the full list):

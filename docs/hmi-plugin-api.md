@@ -5,7 +5,7 @@ plugin. Two servers implement it:
 
 - `inventree-plugin/` — the real thing, running inside InvenTree.
   Base URL: `https://<inventree-host>/plugin/smartreel`
-- `mock-inventree/` — standalone FastAPI mock for bench development.
+- `debug-fw/mock-inventree/` — standalone FastAPI mock for bench development.
   Base URL: `https://<dev-host>:8443`
 
 The HMI appends `/api/v1/<path>` to its configured base URL, so both

@@ -12,7 +12,7 @@ simple; the plugin does the translation.
 ## Quick start
 
 ```sh
-cd mock-inventree
+cd debug-fw/mock-inventree
 ./setup.sh           # creates .venv, installs deps, generates TLS cert (one-off)
 ./run.sh             # starts on https://0.0.0.0:8443, token "dev-token"
 # in another shell:

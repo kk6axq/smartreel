@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Generate the mock parts catalog + scannable QR codes for the HMI Load flow.
+"""Generate scannable mock QR codes for bench-testing the HMI Load flow.
 
-Outputs (under <repo>/sd-assets/):
-  parts.json            -> copy to the SD card root as /sdcard/parts.json
+Outputs (under <repo>/debug-fw/sd-assets/):
   qr/MOCK-PART-#####.png -> one QR per part (print these and scan them)
   qr/contact-sheet.png   -> all codes on one labelled sheet for easy printing
 
-The QR payload is exactly the label "MOCK-PART-#####"; the firmware looks
-that string up in parts.json to resolve the part. Run with the scripts venv:
+The QR payload is exactly the label "MOCK-PART-#####". The HMI scans it and
+resolves the part over InvenTree (no SD parts catalog anymore); the mock
+server's seed has matching stock items, so these codes exercise the full
+scan -> resolve flow on the bench. Run with the scripts venv:
 
     scripts/.venv/bin/python scripts/gen_mock_qr.py
 """
-import json
 import os
 
 import qrcode
@@ -32,7 +32,7 @@ PARTS = [
 ]
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-OUT_DIR = os.path.join(REPO, "sd-assets")
+OUT_DIR = os.path.join(REPO, "debug-fw", "sd-assets")
 QR_DIR = os.path.join(OUT_DIR, "qr")
 QR_PX = 480  # rendered module-snapped size per code
 
@@ -45,21 +45,6 @@ def _font(size):
         if os.path.exists(path):
             return ImageFont.truetype(path, size)
     return ImageFont.load_default()
-
-
-def write_parts_json():
-    doc = {
-        "version": 1,
-        "parts": [
-            {"qr": qr, "id": pid, "name": name, "pkg": pkg, "mfg": mfg}
-            for (qr, pid, name, pkg, mfg) in PARTS
-        ],
-    }
-    path = os.path.join(OUT_DIR, "parts.json")
-    with open(path, "w") as f:
-        json.dump(doc, f, indent=2)
-        f.write("\n")
-    print(f"  parts.json   -> {path}  ({len(PARTS)} parts)")
 
 
 def make_qr(label):
@@ -121,10 +106,9 @@ def write_contact_sheet():
 def main():
     os.makedirs(QR_DIR, exist_ok=True)
     print("Generating mock QR assets:")
-    write_parts_json()
     write_individual()
     write_contact_sheet()
-    print("done. Copy sd-assets/parts.json to the SD card root (/sdcard/parts.json).")
+    print("done. Print qr/*.png (or contact-sheet.png) and scan them on the HMI Load screen.")
 
 
 if __name__ == "__main__":

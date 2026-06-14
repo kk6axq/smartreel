@@ -148,7 +148,7 @@ token-bound rack identity:
 
 ## 6. The mock server
 
-`mock-inventree/` is a FastAPI service implementing the same `/api/v1/*`
+`debug-fw/mock-inventree/` is a FastAPI service implementing the same `/api/v1/*`
 contract so the HMI can be developed without a live InvenTree.
 
 - Start: `./setup.sh` (one-off: venv + deps + cert), then `./run.sh` →

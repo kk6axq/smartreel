@@ -17,7 +17,7 @@ flowchart LR
         PLUGIN["SmartReel plugin<br/>(Python, inside InvenTree)"]
         INV["InvenTree core<br/>StockItems / Locations / Builds"]
     end
-    MOCK["mock-inventree<br/>(FastAPI, dev only)"]
+    MOCK["debug-fw/mock-inventree<br/>(FastAPI, dev only)"]
 
     HMI <-->|"RS485 framed protocol<br/>115200 baud, half-duplex"| CORE
     CORE <-->|"LED data + shift-reg inputs + sense"| MODS
@@ -195,7 +195,7 @@ Mixins: `UrlsMixin` (custom routes under `/plugin/smartreel/`),
 barcode plugin registry. See [InvenTree Integration](05-inventree-integration.md)
 for the full picture (rack identity, sync model, multi-rack).
 
-## 5. Mock InvenTree (`mock-inventree/`)
+## 5. Mock InvenTree (`debug-fw/mock-inventree/`)
 
 A FastAPI service that implements the same `/api/v1/*` contract so the HMI can
 be developed without a live InvenTree. Serves HTTPS on `:8443` (self-signed

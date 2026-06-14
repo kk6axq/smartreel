@@ -1,10 +1,10 @@
 # SmartReel test plan — 2026-06-12 build
 
-Covers the work from `docs/session-notes-2026-06-12.md`: the rewritten
-HMI↔plugin contract (`docs/hmi-plugin-api.md`), the real InvenTree plugin,
-the realigned mock, and the HMI firmware sync layer. Ordered so each phase
-builds confidence for the next; you can stop at a phase boundary and still
-have learned something coherent.
+Covers the 2026-06-12 work: the rewritten HMI↔plugin contract
+(`docs/hmi-plugin-api.md`), the real InvenTree plugin, the realigned mock,
+and the HMI firmware sync layer. Ordered so each phase builds confidence
+for the next; you can stop at a phase boundary and still have learned
+something coherent.
 
 Legend: ☐ = do it, **PASS:** = what you must observe.
 
@@ -15,7 +15,7 @@ Legend: ☐ = do it, **PASS:** = what you must observe.
 These should already be green; re-run them first so any later failure is
 known to be hardware/integration, not regression.
 
-- ☐ `mock-inventree/smoke-test.sh`
+- ☐ `debug-fw/mock-inventree/smoke-test.sh`
   **PASS:** every line `ok`, final `ALL OK`.
 - ☐ InvenTree stack up (`docker compose up -d` in `~/Desktop/Projects/inventree`),
   then `inventree-plugin/test-live.sh`
@@ -57,7 +57,7 @@ The mock speaks HTTPS already, so this exercises the full firmware path
 
 Setup:
 - ☐ Flash the HMI (`scripts/` flash helper or `pio run -t upload`).
-- ☐ Start the mock: `cd mock-inventree && ./run.sh` (HTTPS :8443).
+- ☐ Start the mock: `cd debug-fw/mock-inventree && ./run.sh` (HTTPS :8443).
 - ☐ Open the dashboard from a browser **via the LAN IP**
   (`https://<lan-ip>:8443/`), set token `dev-token`.
 

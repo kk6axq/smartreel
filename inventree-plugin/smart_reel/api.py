@@ -1,7 +1,7 @@
 """HTTP layer for the SmartReel plugin API.
 
 Thin DRF views over services.py. Contract: docs/hmi-plugin-api.md in the
-SmartReel repo — the mock server (mock-inventree/) implements the same
+SmartReel repo — the mock server (debug-fw/mock-inventree/) implements the same
 shapes. The HMI authenticates with `Authorization: Token <ApiToken>`;
 the Build Order panel uses the browser session.
 

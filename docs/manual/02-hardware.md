@@ -60,7 +60,7 @@ for tearing-free refresh; see [Software Architecture](03-software-architecture.m
 
 ## 3. Core PCB
 
-KiCad project: `CorePCB/SmartReelCore/`.
+KiCad project: `pcbs/CorePCB/SmartReelCore/`.
 
 | Function | Part / detail |
 |---|---|
@@ -87,7 +87,7 @@ valid master frame has arrived within the last 1000 ms.
 
 ## 4. Reel modules
 
-KiCad project: `ReelPCB/` (with a `Switch_Unit.kicad_sch` sub-circuit and
+KiCad project: `pcbs/ReelPCB/` (with a `Switch_Unit.kicad_sch` sub-circuit and
 per-module label PDFs under `labels/`).
 
 Each module provides **16 reel slots** and carries:
@@ -167,9 +167,9 @@ full frame format and message catalog.
 
 - `labels/` — printable slot-label PDFs (one per module, slots numbered).
 - `scripts/` — flashing, SD deployment, and mock-QR generation helpers.
-- `tools/` — firmware-tag injection and related tooling.
-- `sd-assets/` — files staged onto the HMI SD card (offline part catalog, etc.).
-- `CorePCB/`, `ReelPCB/` — the KiCad designs (schematics, PCB, production
+- `debug-fw/inject.py` — bench event injector for the RP2040 core test rig.
+- `debug-fw/sd-assets/` — mock QR codes for bench-testing the scan flow.
+- `pcbs/CorePCB/`, `pcbs/ReelPCB/` — the KiCad designs (schematics, PCB, production
   outputs under each project's `production/`).
 
 ## 9. Known hardware TODOs

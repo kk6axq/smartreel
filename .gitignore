@@ -72,7 +72,8 @@ __pycache__/
 # Large 3D / fabrication exports and generated label assets (kept out of git)
 *.step
 *.stp
-labels/
+labels/*.pdf
+labels/*.dxf
 
 # KiCad working copies / backups
 *working_backup*
