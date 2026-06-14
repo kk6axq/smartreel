@@ -33,7 +33,7 @@ for detail and history but are not the authoritative manual:
   catalog lists firmware messages under category `0xF_`; the **code implements
   them at `0x30`–`0x35`** (see API reference for why).
 - `user-stories.md` — the behavioural source of truth for the workflows.
-- `roadmap.md`, `session-handoff.md`, `session-notes-*.md` — project history.
+- `roadmap.md` — project plan and history.
 - `known-bugs.md` — open and fixed issues.
 - `test-plan.md` — verification plan.
 
@@ -43,12 +43,17 @@ for detail and history but are not the authoritative manual:
 esp32-hmi/         ESP32-S3 touchscreen HMI firmware (C++ / PlatformIO / LVGL)
 core-fw/           RP2040 core firmware that drives the reel modules (C++ / PlatformIO)
 inventree-plugin/  InvenTree server-side plugin (Python)
-mock-inventree/    FastAPI stand-in for the plugin, used during HMI development
-CorePCB/           KiCad design for the Core PCB
-ReelPCB/           KiCad design for the reel module PCB
-labels/            Printable slot label PDFs
-scripts/, tools/   Flashing, SD deployment, QR/label generation helpers
-sd-assets/         Files staged onto the HMI's SD card (offline catalog, etc.)
+pcbs/              KiCad hardware designs
+  CorePCB/           Core PCB
+  ReelPCB/           reel module PCB
+debug-fw/          Bench/debug tooling (not shipped)
+  mock-inventree/    FastAPI stand-in for the plugin, used during HMI development
+  core-hwtest/       RP2040 hardware bring-up test
+  esp32-rs485-pintest/ standalone ESP32 RS485 pin-toggle tool
+  inject.py          bench event injector (drives the core test rig over USB)
+  sd-assets/         mock QR codes for bench-testing the scan->resolve flow
+labels/            Printable slot label PDFs (make_labels.py; PDFs git-ignored)
+scripts/           Flashing, SD deployment, QR generation helpers
 ```
 
 > **In-progress areas.** Two features were being developed alongside this

@@ -5,7 +5,18 @@ or as we learn more.
 
 ---
 
-(No open issues at the moment.)
+## HMI: pick-job `status` not persisted across reboot (cache only)
+
+`state_store` writes pick jobs to `/sdcard/jobs.json` but does **not**
+persist the per-job `status` field (`pending` / `partial` / `done`). The
+status is treated as cache only and is recomputed from the server on the
+next pick-job fetch, so a reboot mid-job loses the locally-cached status
+until the HMI re-fetches the job list from InvenTree. Already-picked items
+are not lost (that state lives server-side); only the local status hint is
+transient. Low impact while online; worth persisting if offline job
+resumption is ever needed.
+
+**Filed**: 2026-06-12.
 
 ---
 
