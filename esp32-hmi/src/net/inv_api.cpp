@@ -432,6 +432,27 @@ SlotMutResult register_rack(int n_slots, const char* op_id) {
     return slot_mut_call("rack/register", body);
 }
 
+SlotMutResult ack_locates(const int* ids, int n_ids) {
+    // {"ids":[...]}; n_ids == 0 sends {"ids":[]} which clears the queue.
+    // No op_id: locate ids originate in InvenTree and ack is idempotent by
+    // set-difference, so the op_id replay-cache buys us nothing here.
+    // Body sized for the plugin's 50-id cap (worst case ~9 chars/id incl.
+    // separator) plus the wrapper, with truncation checked below.
+    char body[512];
+    {
+        JsonDocument req;
+        JsonArray arr = req["ids"].to<JsonArray>();
+        for (int i = 0; i < n_ids; ++i) arr.add(ids[i]);
+        if (serializeJson(req, body, sizeof(body)) >= sizeof(body)) {
+            SlotMutResult r{};
+            r.status = Status::BadStatus;
+            snprintf(r.error, sizeof(r.error), "too many locate ids");
+            return r;
+        }
+    }
+    return slot_mut_call("rack/locates/ack", body);
+}
+
 // ---- GET /rack -------------------------------------------------------
 
 void get_rack(RackResult& out) {
@@ -463,6 +484,7 @@ void get_rack(RackResult& out) {
     }
     out.location_id         = doc["location_id"] | 0;
     out.pickjobs_available  = doc["pickjobs_available"] | 0;
+    out.n_locates           = 0;
 
     for (JsonObjectConst s : doc["slots"].as<JsonArrayConst>()) {
         if (out.n_slots >= RackResult::MAX_SLOTS) break;
@@ -479,6 +501,17 @@ void get_rack(RackResult& out) {
             rs.qty      = 0;
             rs.part     = Part{};
         }
+    }
+
+    // Pending locate requests (web-UI "locate" button). Empty array when
+    // none; bounded to MAX_LOCATES (the plugin caps its queue at 50, so we
+    // size to match -- extras are dropped, but the ack/dedupe path still
+    // drains what we did light on subsequent polls).
+    for (JsonObjectConst l : doc["locates"].as<JsonArrayConst>()) {
+        if (out.n_locates >= RackResult::MAX_LOCATES) break;
+        Locate& loc = out.locates[out.n_locates++];
+        loc.id       = l["id"]       | 0;
+        loc.slot_num = l["slot_num"] | 0;
     }
     capture_success();
 }

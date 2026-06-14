@@ -96,10 +96,20 @@ struct RackSlot {
     Part     part;
 };
 
+// One pending locate request from GET /rack (the web-UI "locate" button).
+// Slimmed to what the HMI needs to light + ack: the part/name/stock fields
+// in the wire shape are not carried -- lighting only needs slot_num and
+// draining only needs id.
+struct Locate {
+    int id;          // server-assigned; ack drains by this id
+    int slot_num;    // logical/physical anchor slot to light
+};
+
 // Heap-allocate this (e.g. `new RackResult()`): with MAX_SLOTS entries
 // it's far too large for a worker-task stack.
 struct RackResult {
-    static constexpr int MAX_SLOTS = 256;
+    static constexpr int MAX_SLOTS   = 256;
+    static constexpr int MAX_LOCATES = 50;   // plugin caps the queue at 50
     Status   status;
     int      http_code;
     char     error[96];
@@ -107,6 +117,8 @@ struct RackResult {
     int      n_slots;
     int      pickjobs_available;
     RackSlot slots[MAX_SLOTS];
+    int      n_locates;
+    Locate   locates[MAX_LOCATES];
 };
 
 // GET /pickjobs. Mirrors app::PickJob capacities.
@@ -178,6 +190,11 @@ SlotMutResult report_anomaly(const char* kind, int slot_num,
                              const char* detail, const char* op_id);
 // POST /rack/register: ensure slot sub-locations 1..n_slots exist.
 SlotMutResult register_rack (int n_slots, const char* op_id);
+// POST /rack/locates/ack: drain consumed locate requests by id. Idempotent
+// (set-difference server-side), so it carries no op_id. `ids`/`n_ids` is the
+// list to ack; pass n_ids == 0 to clear the whole queue. Reuses SlotMutResult
+// purely as the generic envelope (its slot/stock fields are unused here).
+SlotMutResult ack_locates  (const int* ids, int n_ids);
 
 // Caller heap-allocates `out` (see RackResult comment) and zeroes it.
 void get_rack    (RackResult& out);

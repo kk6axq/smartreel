@@ -2,6 +2,7 @@
 #include "ui/theme.h"
 #include "ui/status_bar.h"
 #include "ui/anomaly_modal.h"
+#include "ui/locate_overlay.h"
 #include "ui/wifi_password_modal.h"
 #include "ui/text_entry_modal.h"
 #include "ui/app_state.h"
@@ -133,6 +134,7 @@ void init() {
 
     status_bar_init();
     anomaly_modal_init();
+    locate_overlay_init();
     wifi_password_modal_init();
     text_entry_modal_init();
 

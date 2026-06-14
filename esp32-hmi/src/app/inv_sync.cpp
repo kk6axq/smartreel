@@ -7,6 +7,7 @@
 #include "app/leds.h"
 #include "ui/app_state.h"
 #include "ui/anomaly_modal.h"
+#include "ui/locate_overlay.h"
 #include "ui/screen_manager.h"
 #include "util/lvgl_async.h"
 
@@ -43,7 +44,11 @@ constexpr uint32_t ONLINE_WINDOW_MS   = 45000;   // health age that still counts
 constexpr int      OP_MAX_ATTEMPTS    = 20;      // transient-failure retries per op
 
 // ---- Mutation queue --------------------------------------------------
-enum class OpType : uint8_t { Assign, Pick, JobPick, Clear, Anomaly };
+enum class OpType : uint8_t { Assign, Pick, JobPick, Clear, Anomaly, LocateAck };
+
+// Max locate ids carried in a single ack op. The plugin caps its queue at
+// 50; one poll can surface at most that many, and we ack what we lit.
+constexpr int ACK_IDS_CAP = 50;
 
 struct Op {
     OpType  type;
@@ -54,6 +59,8 @@ struct Op {
     char    text[96];       // Clear: reason / Anomaly: detail
     char    kind[10];       // Anomaly
     char    op_id[40];
+    int     ack_ids[ACK_IDS_CAP];   // LocateAck
+    int     n_ack_ids;              // LocateAck
     uint8_t attempts;
 };
 
@@ -113,6 +120,21 @@ Op make_op(OpType t) {
     return op;
 }
 
+// Enqueue a POST /rack/locates/ack for the given ids. Routed through the
+// op queue like every other outbound write, so it retries on a transient
+// failure and respects ordering. No op_id is needed (ack is idempotent by
+// set-difference, not op_id-cached -- locate ids originate in InvenTree),
+// but make_op() stamping one is harmless and keeps the path uniform.
+void queue_locate_ack(const int* ids, int n) {
+    if (n <= 0) return;
+    if (n > ACK_IDS_CAP) n = ACK_IDS_CAP;
+    Op op = make_op(OpType::LocateAck);
+    op.n_ack_ids = n;
+    for (int i = 0; i < n; ++i) op.ack_ids[i] = ids[i];
+    SR_LOG("queue locate-ack (%d ids)", n);
+    q_push(op);
+}
+
 // ---- Op execution -----------------------------------------------------
 // Returns true when the op is finished (success OR permanent rejection)
 // and should be popped; false to keep it queued for retry.
@@ -146,6 +168,11 @@ bool run_op(const Op& op) {
         case OpType::Anomaly:
             what = "anomaly";
             r  = inv_api::report_anomaly(op.kind, op.slot, op.text, op.op_id);
+            st = r.status;
+            break;
+        case OpType::LocateAck:
+            what = "locate-ack";
+            r  = inv_api::ack_locates(op.ack_ids, op.n_ack_ids);
             st = r.status;
             break;
         default:
@@ -351,6 +378,31 @@ void apply_rack_result(void* user) {
 
     SR_LOG("reconcile: %d slots (%d server-occupied) adopt=%d moved=%d cleared-local=%d phys=%d",
            rr->n_slots, n_occ, n_adopt, n_moved, n_clearlocal, have_physical);
+
+    // ---- Pending locate requests (web-UI "locate" button) -------------
+    // We're on the LVGL task and the fetch succeeded (worker only dispatches
+    // here on Status::Ok), so it is safe to drive the overlay/LEDs and we are
+    // genuinely online. For each pending locate, light the slot persistently
+    // (locate_overlay owns the active-locate state and keeps it lit across
+    // polls until the operator dismisses -- an empty locates[] on a later poll
+    // does NOT clear it). Then ack the ids we handled so the server queue
+    // drains and they don't re-light on the next poll. Lighting persistence
+    // (local) and ack (server) are independent: ack only stops re-delivery.
+    if (rr->n_locates > 0) {
+        int ack_ids[inv_api::RackResult::MAX_LOCATES];
+        int n_ack = 0;
+        for (int i = 0; i < rr->n_locates; ++i) {
+            const inv_api::Locate& loc = rr->locates[i];
+            if (loc.slot_num > 0)
+                ui::locate_overlay_add(loc.slot_num);   // persistent highlight
+            if (loc.id > 0 && n_ack < (int)(sizeof(ack_ids)/sizeof(ack_ids[0])))
+                ack_ids[n_ack++] = loc.id;
+        }
+        if (n_ack > 0) {
+            queue_locate_ack(ack_ids, n_ack);
+            SR_LOG("locate: lit %d slot(s), acking %d id(s)", rr->n_locates, n_ack);
+        }
+    }
 
     if (changed && (ui::current() == ui::Screen::Home ||
                     ui::current() == ui::Screen::View ||
