@@ -57,6 +57,16 @@ class PickJob(BaseModel):
     items: list[PickJobItem]
 
 
+class LocateRequest(BaseModel):
+    """A pending "light slot N" request from the InvenTree locate button."""
+    id: int
+    slot_num: int
+    part: str | None = None        # part wire id, when known
+    part_name: str | None = None
+    stock_id: int | None = None
+    at: str                        # ISO-8601
+
+
 class Anomaly(BaseModel):
     id: int
     kind: Literal["removed", "added", "divider"]
@@ -110,6 +120,13 @@ class InjectErrorReq(BaseModel):
     count: int = 1
 
 
+class LocateInjectReq(BaseModel):
+    """Dev-only: simulate the InvenTree locate button. Supply exactly one."""
+    slot: int | None = None
+    stock_id: int | None = None
+    part_id: str | None = None
+
+
 # ---------- response wrappers ----------
 
 class HealthResp(BaseModel):
@@ -148,6 +165,18 @@ class RackResp(BaseModel):
     n_slots: int
     slots: list[RackSlot]
     pickjobs_available: int
+    # Pending locate requests (InvenTree locate button); HMI lights these and
+    # acks the ids via POST /rack/locates/ack.
+    locates: list[LocateRequest] = Field(default_factory=list)
+
+
+class LocateAckReq(BaseModel):
+    # Locate ids to drop; empty / omitted clears the whole queue.
+    ids: list[int] | None = None
+
+
+class LocateAckResp(BaseModel):
+    locates: list[LocateRequest] = Field(default_factory=list)
 
 
 class PickJobsResp(BaseModel):

@@ -125,6 +125,19 @@ curl -s -H "$H" -H 'Content-Type: application/json' \
 PARTID=$(echo "$RACK2" | $PY -c 'import json,sys; d=json.load(sys.stdin); print(next(s["stock"]["part"]["id"] for s in d["slots"] if s["stock"]))')
 curl -s -H "$H" "$B/parts/locate?part_id=$PARTID" \
     | check "locate shape" 'd["part_id"] and isinstance(d["slots"], list)'
+
+echo "--- locate button (LocateMixin) round-trip"
+# simulate InvenTree's locate button for $PARTID, see it on the rack poll, ack it
+LID=$(curl -s -H "$H" -H 'Content-Type: application/json' \
+    -d "{\"part_id\":\"$PARTID\"}" "$B/_dev/locate" \
+    | $PY -c 'import json,sys; d=json.load(sys.stdin); print(d["locates"][0]["id"])')
+curl -s -H "$H" "$B/rack" \
+    | check "locate shows in rack snapshot" \
+        "any(l[\"id\"] == $LID for l in d[\"locates\"])"
+curl -s -H "$H" -H 'Content-Type: application/json' \
+    -d "{\"ids\":[$LID]}" "$B/rack/locates/ack" \
+    | check "ack drops the locate" "all(l[\"id\"] != $LID for l in d[\"locates\"])"
+
 curl -s -H "$H" "$B/_dev/provision" \
     | check "provision payload + svg" \
         'd["payload"].startswith("SRPROV1:") and d["svg"]'

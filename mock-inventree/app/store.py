@@ -27,12 +27,14 @@ class State:
     slots: list[dict] = field(default_factory=list)                 # idx == slot_num - 1
     pick_jobs: dict[str, dict] = field(default_factory=dict)        # job_id -> PickJob
     anomalies: list[dict] = field(default_factory=list)
+    locates: list[dict] = field(default_factory=list)              # pending locate requests
     # op_id -> (expires_at, response_dict). Idempotency for mutating endpoints.
     op_cache: dict[str, tuple[float, Any]] = field(default_factory=dict)
     # [{path: str, status: int, count: int}], counted-down by middleware.
     error_injections: list[dict] = field(default_factory=list)
     next_stock_id: int = 1000
     next_anomaly_id: int = 1
+    next_locate_id: int = 1
 
 
 state = State()
@@ -87,6 +89,42 @@ def located_slots_for(part_id: str) -> list[int]:
         if si and si["part_id"] == part_id:
             out.append(slot["slot"])
     return out
+
+
+# ---------- locate queue (InvenTree locate button -> light a slot) ----------
+
+def enqueue_locate(slot_num: int) -> dict:
+    """Queue a "light slot N" request, mirroring the real plugin: a fresh
+    locate for an already-queued slot refreshes it instead of stacking. Caller
+    holds the lock."""
+    import time as _time
+
+    state.locates = [e for e in state.locates if e["slot_num"] != slot_num]
+    slot = slot_at(slot_num)
+    sid = slot.get("stock_id") if slot else None
+    si = state.stock_items.get(sid) if sid else None
+    part = state.parts.get(si["part_id"]) if si else None
+    entry = {
+        "id": state.next_locate_id,
+        "slot_num": slot_num,
+        "part": part["id"] if part else None,
+        "part_name": part["name"] if part else None,
+        "stock_id": sid,
+        "at": _time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+    state.next_locate_id += 1
+    state.locates.append(entry)
+    return entry
+
+
+def ack_locates(ids: list[int] | None) -> list[dict]:
+    """Drop the given locate ids (empty/None clears all). Caller holds the lock."""
+    if not ids:
+        state.locates = []
+    else:
+        drop = set(ids)
+        state.locates = [e for e in state.locates if e["id"] not in drop]
+    return state.locates
 
 
 # ---------- renderers (internal dict -> wire dict) ----------

@@ -16,6 +16,8 @@ from ..models import (
     AssignResp,
     ClearReq,
     ClearResp,
+    LocateAckReq,
+    LocateAckResp,
     PickReq,
     PickResp,
     RackResp,
@@ -46,7 +48,18 @@ def get_rack() -> RackResp:
             n_slots=len(slots),
             slots=slots,
             pickjobs_available=jobs_avail,
+            locates=list(store.state.locates),
         )
+
+
+@router.post("/locates/ack", response_model=LocateAckResp)
+def ack_locates(req: LocateAckReq) -> LocateAckResp:
+    """Drop consumed locate requests (InvenTree locate button). Body
+    {"ids": [...]} acks specific ids; {} / {"ids": []} clears the queue.
+    Idempotent: acking an unknown id is a no-op."""
+    with store.lock():
+        remaining = store.ack_locates(req.ids)
+        return LocateAckResp(locates=list(remaining))
 
 
 @router.post("/register", response_model=RegisterResp)

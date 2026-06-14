@@ -27,6 +27,7 @@ from __future__ import annotations
 import logging
 
 from django.core.cache import cache
+from django.db import transaction
 from django.utils import timezone
 
 logger = logging.getLogger("inventree")
@@ -182,17 +183,29 @@ def ensure_slots(rack, n_slots: int, user=None) -> dict[int, object]:
 
     mark_rack(rack)   # registering implicitly designates the location a rack
     existing = slot_map(rack)
-    for n in range(1, n_slots + 1):
-        if n in existing:
-            continue
-        loc = StockLocation.objects.create(
-            name=f"Slot {n:02d}",
-            parent=rack,
-            description=f"SmartReel slot {n}",
-        )
-        loc.set_metadata(METADATA_KEY, {"slot": n})
-        existing[n] = loc
-        logger.info("smartreel: rack %s created slot %s (pk=%s)", rack.pk, n, loc.pk)
+    missing = [n for n in range(1, n_slots + 1) if n not in existing]
+    if not missing:
+        return existing
+
+    # Collapse the N+1 into one transaction. NOTE: StockLocation is an MPTT
+    # tree (InvenTreeTree) — its save() maintains tree_id/lft/rght/level and
+    # pathstring and runs a partial tree rebuild per node, none of which
+    # bulk_create() performs. bulk_create() would therefore corrupt the
+    # location tree (and leave pathstring empty), so we keep StockLocation
+    # .create() / set_metadata() per slot but wrap the whole batch in a single
+    # transaction.atomic(). That turns hundreds of individual autocommits into
+    # one committed transaction (a large round-trip reduction) while preserving
+    # exact MPTT/pathstring/metadata behavior.
+    with transaction.atomic():
+        for n in missing:
+            loc = StockLocation.objects.create(
+                name=f"Slot {n:02d}",
+                parent=rack,
+                description=f"SmartReel slot {n}",
+            )
+            loc.set_metadata(METADATA_KEY, {"slot": n})
+            existing[n] = loc
+            logger.info("smartreel: rack %s created slot %s (pk=%s)", rack.pk, n, loc.pk)
     return existing
 
 
@@ -288,6 +301,9 @@ def rack_snapshot(rack) -> dict:
         "n_slots": len(out),
         "slots": out,
         "pickjobs_available": len(jobs),
+        # Pending "locate" requests (InvenTree locate button); the HMI lights
+        # these slots and acks the ids via POST /rack/locates/ack.
+        "locates": locate_requests(rack),
     }
 
 
@@ -358,6 +374,148 @@ def locate_part(rack, wire_id: str) -> dict:
         if (item := stock_in(slots[n])) and item.part_id == part.pk
     ]
     return {"part_id": wire_id, "slots": found}
+
+
+# ---------------------------------------------------------------------------
+# Locate requests (InvenTree "locate" button -> light a slot on the rack)
+# ---------------------------------------------------------------------------
+#
+# InvenTree's LocateMixin offloads locate_stock_item / locate_stock_location
+# to a background worker (group='plugin'); the plugin never talks to the rack
+# directly, so a locate is recorded as a pending intent on the *rack's*
+# metadata and the HMI consumes it. The HMI already polls GET /rack for
+# reconciliation, so locates ride on that snapshot (`locates`) and the HMI
+# acks consumed ids via POST /rack/locates/ack so they don't re-light forever.
+
+LOCATE_QUEUE_KEY = "smartreel_locates"   # on a rack location: pending locates
+LOCATE_QUEUE_CAP = 50
+
+
+def slot_num_for_location(rack, location) -> int | None:
+    """Slot number of `location` within `rack`, or None if it isn't a slot."""
+    if location is None:
+        return None
+    for n, loc in slot_map(rack).items():
+        if loc.pk == location.pk:
+            return n
+    return None
+
+
+def rack_for_slot_location(location):
+    """The (rack, slot_num) a slot location belongs to, or (None, None).
+
+    A slot is a child of a rack tagged metadata['smartreel'] = {"slot": n};
+    its parent is the rack location.
+    """
+    if location is None:
+        return None, None
+    meta = location.get_metadata(METADATA_KEY) or {}
+    slot = meta.get("slot")
+    if not isinstance(slot, int):
+        return None, None
+    rack = location.parent
+    if not is_rack_location(rack):
+        return None, None
+    return rack, slot
+
+
+def enqueue_locate(rack, slot_num: int, stock=None, part=None) -> dict:
+    """Record a pending "light slot N" request on the rack. Idempotent on the
+    (slot_num) target: a fresh locate for an already-queued slot refreshes it
+    rather than stacking duplicates, so repeated button presses stay sane."""
+    prev = rack.get_metadata(LOCATE_QUEUE_KEY) or []
+    # Drop any existing locate for this slot so repeated presses don't stack,
+    # but keep ids monotonic across the whole (pre-dedupe) queue.
+    queue = [e for e in prev if e.get("slot_num") != slot_num]
+    next_id = max((e["id"] for e in prev), default=0) + 1
+    entry = {
+        "id": next_id,
+        "slot_num": slot_num,
+        "part": part_wire_id(part) if part is not None else None,
+        "part_name": part.full_name if part is not None else None,
+        "stock_id": stock.pk if stock is not None else None,
+        "at": timezone.now().isoformat(timespec="seconds"),
+    }
+    queue.append(entry)
+    rack.set_metadata(LOCATE_QUEUE_KEY, queue[-LOCATE_QUEUE_CAP:])
+    logger.info("smartreel: rack %s locate slot %s (id=%s)", rack.pk, slot_num, next_id)
+    return entry
+
+
+def locate_requests(rack) -> list[dict]:
+    """Pending locate requests for `rack` (oldest first)."""
+    return list(rack.get_metadata(LOCATE_QUEUE_KEY) or [])
+
+
+def ack_locates(rack, ids) -> dict:
+    """Drop the given locate ids from the rack's queue (empty/None clears all).
+    Idempotent: acking an unknown/already-acked id is a no-op. Returns the
+    remaining queue."""
+    prev = rack.get_metadata(LOCATE_QUEUE_KEY) or []
+    if not ids:
+        queue: list = []
+    else:
+        drop = {int(i) for i in ids}
+        queue = [e for e in prev if e.get("id") not in drop]
+    rack.set_metadata(LOCATE_QUEUE_KEY, queue)
+    return {"locates": queue}
+
+
+def locate_stock_location_pk(location_pk) -> dict:
+    """Resolve a StockLocation pk to a rack slot and enqueue a locate.
+
+    Called from the LocateMixin (background worker). If the location is a
+    SmartReel slot, the locate is queued on its rack; if it's a rack itself,
+    every occupied slot is lit. Locations outside any SmartReel rack are a
+    no-op (another plugin / no rack owns them)."""
+    loc = _loc_by_pk(location_pk)
+    if loc is None:
+        logger.warning("smartreel locate: location %s not found", location_pk)
+        return {"located": False, "reason": "location not found"}
+
+    rack, slot_num = rack_for_slot_location(loc)
+    if rack is not None:
+        item = stock_in(loc)
+        enqueue_locate(rack, slot_num, stock=item,
+                       part=item.part if item is not None else None)
+        return {"located": True, "rack_id": rack.pk, "slots": [slot_num]}
+
+    # The location may be a rack as a whole -> light all of its occupied slots.
+    if is_rack_location(loc):
+        lit = []
+        for n, sloc in sorted(slot_map(loc).items()):
+            item = stock_in(sloc)
+            if item is not None:
+                enqueue_locate(loc, n, stock=item, part=item.part)
+                lit.append(n)
+        return {"located": bool(lit), "rack_id": loc.pk, "slots": lit}
+
+    return {"located": False, "reason": "location is not in a SmartReel rack"}
+
+
+def locate_stock_item_pk(item_pk) -> dict:
+    """Resolve a StockItem pk to its rack slot and enqueue a locate.
+
+    Mirrors LocateMixin's default item->location behaviour, but resolves the
+    rack/slot ourselves so we can carry the part/stock context into the queue.
+    """
+    from stock.models import StockItem
+
+    try:
+        item = StockItem.objects.get(pk=item_pk)
+    except StockItem.DoesNotExist:
+        logger.warning("smartreel locate: stock item %s not found", item_pk)
+        return {"located": False, "reason": "stock item not found"}
+
+    if not item.in_stock or item.location is None:
+        return {"located": False, "reason": "stock item not in stock"}
+
+    rack, slot_num = rack_for_slot_location(item.location)
+    if rack is None:
+        return {"located": False, "reason": "stock item is not in a SmartReel slot"}
+
+    enqueue_locate(rack, slot_num, stock=item, part=item.part)
+    return {"located": True, "rack_id": rack.pk, "slots": [slot_num]}
 
 
 # ---------------------------------------------------------------------------
@@ -578,11 +736,15 @@ def pick_job_item(rack, reference: str, idx: int, slot_num: int, user) -> dict:
             f"item needs {item_meta['part_id']}"
         )
 
-    result = pick_slot(rack, slot_num, user, destination_id=job.get("destination_id"))
-
-    item_meta["picked"] = True
-    item_meta["picked_stock"] = result["stock_id"]
-    build.set_metadata(METADATA_KEY, job)
+    # Atomic: the stock move and the job's "picked" bookkeeping must commit or
+    # roll back together. A crash between them would otherwise move stock while
+    # leaving the item unpicked — an unrecoverable partial state that the op_id
+    # idempotency cache can't repair (the stock is already gone on retry).
+    with transaction.atomic():
+        result = pick_slot(rack, slot_num, user, destination_id=job.get("destination_id"))
+        item_meta["picked"] = True
+        item_meta["picked_stock"] = result["stock_id"]
+        build.set_metadata(METADATA_KEY, job)
 
     rendered = render_job(build, job, slots)
     return {
@@ -600,17 +762,24 @@ ANOMALY_LOG_CAP = 200
 
 
 def log_anomaly(rack, kind: str, slot_num: int | None, detail: str) -> dict:
-    log = rack.get_metadata(ANOMALY_LOG_KEY) or []
-    next_id = (log[-1]["id"] + 1) if log else 1
-    entry = {
-        "id": next_id,
-        "kind": kind,
-        "slot_num": slot_num,
-        "detail": (detail or "")[:200],
-        "at": timezone.now().isoformat(timespec="seconds"),
-    }
-    log.append(entry)
-    rack.set_metadata(ANOMALY_LOG_KEY, log[-ANOMALY_LOG_CAP:])
+    from stock.models import StockLocation
+
+    # Atomic read-modify-write: two concurrent requests must not read the same
+    # log, compute the same next_id, and clobber each other. Re-fetch the rack
+    # row under a row lock so the read and the write are serialized.
+    with transaction.atomic():
+        rack = StockLocation.objects.select_for_update().get(pk=rack.pk)
+        log = rack.get_metadata(ANOMALY_LOG_KEY) or []
+        next_id = (log[-1]["id"] + 1) if log else 1
+        entry = {
+            "id": next_id,
+            "kind": kind,
+            "slot_num": slot_num,
+            "detail": (detail or "")[:200],
+            "at": timezone.now().isoformat(timespec="seconds"),
+        }
+        log.append(entry)
+        rack.set_metadata(ANOMALY_LOG_KEY, log[-ANOMALY_LOG_CAP:])
     logger.warning("smartreel anomaly: rack=%s %s slot=%s %s",
                    rack.pk, kind, slot_num, detail)
     return {"id": next_id, "logged": True}

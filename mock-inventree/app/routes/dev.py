@@ -11,11 +11,11 @@ import hashlib
 import json
 import os
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import store
 from ..auth import require_token
-from ..models import InjectErrorReq
+from ..models import InjectErrorReq, LocateInjectReq
 from ..seed import reseed
 
 
@@ -97,3 +97,36 @@ def inject_error(req: InjectErrorReq) -> dict:
             "count": max(1, req.count),
         })
         return {"queued": True, "injections": list(store.state.error_injections)}
+
+
+@router.post("/locate")
+def inject_locate(req: LocateInjectReq) -> dict:
+    """Simulate the InvenTree "locate" button: queue a locate request that the
+    HMI will see on its GET /rack poll. Supply one of `slot`, `stock_id`, or
+    `part_id` (which lights every slot currently holding that part)."""
+    with store.lock():
+        targets: list[int] = []
+        if req.slot is not None:
+            targets = [req.slot]
+        elif req.stock_id is not None:
+            s = store.find_stock_slot(req.stock_id)
+            if s is None:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"stock item {req.stock_id} is not in a rack slot",
+                )
+            targets = [s]
+        elif req.part_id is not None:
+            targets = store.located_slots_for(req.part_id)
+            if not targets:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"part {req.part_id} is not in any rack slot",
+                )
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail="supply one of 'slot', 'stock_id', or 'part_id'",
+            )
+        queued = [store.enqueue_locate(n) for n in targets]
+        return {"located": bool(queued), "locates": queued}

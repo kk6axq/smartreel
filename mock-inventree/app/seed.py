@@ -65,10 +65,12 @@ def reseed() -> None:
         s.slots.clear()
         s.pick_jobs.clear()
         s.anomalies.clear()
+        s.locates.clear()
         s.op_cache.clear()
         s.error_injections.clear()
         s.next_stock_id = 1000
         s.next_anomaly_id = 1
+        s.next_locate_id = 1
 
         # Parts catalogue
         for p in data["parts"]:

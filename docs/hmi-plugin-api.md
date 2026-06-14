@@ -73,7 +73,12 @@ stock moved in InvenTree without a physical removal — user-stories.md
       }
     }, ...
   ],
-  "pickjobs_available": 2
+  "pickjobs_available": 2,
+  "locates": [                    // pending "light this slot" requests
+    { "id": 7, "slot_num": 32, "part": "R-10K-0805",
+      "part_name": "RES 10kohm 1% 0805", "stock_id": 1001,
+      "at": "2026-06-13T12:00:00" }
+  ]
 }
 ```
 
@@ -82,6 +87,11 @@ truth. A slot that is logically empty but physically occupied means the
 part was moved in InvenTree behind our back → the HMI lights that slot
 and instructs the user to remove the reel (no inventory action on
 removal — InvenTree already moved it).
+
+`locates` carries pending **locate requests** (see "Locate from InvenTree"
+below): each is a slot the HMI should light to draw attention to it. The
+HMI lights `locates[].slot_num` and, once shown, acks the ids via
+`POST /rack/locates/ack` so they don't re-appear on the next poll.
 
 ### `POST /barcode/resolve` — what did I just scan?
 
@@ -147,6 +157,18 @@ the reel physically left the rack.
 For anomaly paths (reel yanked without a scan/pick). Stock moves to the
 configured "Unsorted / pulled" location so it isn't lost. 2xx even if
 the slot was already logically empty (idempotent goal state).
+
+### `POST /rack/locates/ack` — acknowledge consumed locate requests
+
+```jsonc
+// req
+{ "ids": [7, 8] }        // ack these ids; {} or {"ids": []} clears the queue
+// resp
+{ "locates": [ ...remaining locate requests... ] }
+```
+
+Drains locate requests the HMI has lit (see "Locate from InvenTree").
+Idempotent by construction: acking an unknown/already-acked id is a no-op.
 
 ### `GET /pickjobs` — list pick jobs
 
@@ -222,6 +244,40 @@ entry). Inventory correction is separate (`/clear`).
 
 Powers "find this part" independent of pick jobs.
 
+## Locate from InvenTree (web-UI "locate" button → light a slot)
+
+InvenTree's web UI has a **locate** button on StockItem and StockLocation
+pages. The plugin implements InvenTree's `LocateMixin`
+(`locate_stock_item` / `locate_stock_location`); InvenTree offloads the
+call to a background worker, and the plugin — which has no direct link to
+the rack — records the request as a pending locate on the owning rack and
+lets the HMI light the slot. Flow:
+
+```
+InvenTree "locate" button
+  → POST /api/plugin/locate/   (InvenTree core)
+  → offload_task → SmartReelPlugin.locate_stock_item / _location  (worker)
+  → resolve item/location → (rack, physical slot_num)
+  → enqueue locate on the rack's metadata
+        │
+HMI  ── GET /rack (its existing poll) ──► sees `locates: [{id, slot_num,…}]`
+  → lights slot_num
+  → POST /rack/locates/ack {ids:[…]}  ──► request drained
+```
+
+- `locate_stock_item(item_pk)`: if the item is in stock and homed in a
+  rack slot, queues that slot (carrying the part/stock context).
+- `locate_stock_location(location_pk)`: if the location is a rack **slot**,
+  queues that slot; if it's a **rack** itself, queues every occupied slot;
+  locations outside any SmartReel rack are a no-op (some other plugin owns
+  them).
+- A locate for an already-queued slot **refreshes** it (no duplicate
+  stacking); the queue is capped (50) and stored on the rack location's
+  `metadata['smartreel_locates']`.
+- Locate requests are **not** op_id-idempotent (they originate inside
+  InvenTree, not from the HMI); the HMI side is made safe by `ack`'s set
+  semantics and by the per-slot dedupe.
+
 ## Provisioning (how the HMI gets its URL + token)
 
 Typing on the HMI is painful, so credentials are delivered by QR code
@@ -289,6 +345,11 @@ API token.
 
 ## Changelog
 
+- **2026-06-13**: LocateMixin support — InvenTree's web-UI "locate" button
+  (StockItem / StockLocation) now lights the slot on the physical rack.
+  Locate requests ride on the `GET /rack` snapshot (`locates`) and are
+  drained by `POST /rack/locates/ack`. Mock gains a `POST /_dev/locate`
+  helper to simulate the button.
 - **2026-06-13**: multiple racks implemented — rack identity is bound to
   the HMI's API token; the global `RACK_LOCATION` setting and single-rack
   fallback are removed. Added `/racks`, `rack_location_id` on

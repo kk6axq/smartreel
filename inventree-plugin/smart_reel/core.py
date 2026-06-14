@@ -10,13 +10,24 @@ repo) under /plugin/smartreel/api/v1/, plus web-UI panels:
 from django.urls import path
 
 from plugin import InvenTreePlugin
-from plugin.mixins import SettingsMixin, UrlsMixin, UserInterfaceMixin
+from plugin.mixins import (
+    LocateMixin,
+    SettingsMixin,
+    UrlsMixin,
+    UserInterfaceMixin,
+)
 
 from . import PLUGIN_VERSION
-from . import api
+from . import api, services
 
 
-class SmartReelPlugin(UserInterfaceMixin, UrlsMixin, SettingsMixin, InvenTreePlugin):
+class SmartReelPlugin(
+    LocateMixin,
+    UserInterfaceMixin,
+    UrlsMixin,
+    SettingsMixin,
+    InvenTreePlugin,
+):
     """InvenTree-side counterpart of the SmartReel HMI."""
 
     NAME = "SmartReelPlugin"
@@ -71,6 +82,7 @@ class SmartReelPlugin(UserInterfaceMixin, UrlsMixin, SettingsMixin, InvenTreePlu
             path("api/v1/rack/slots/<int:slot_num>/assign", api.AssignView.as_view(), name="assign"),
             path("api/v1/rack/slots/<int:slot_num>/pick", api.PickView.as_view(), name="pick"),
             path("api/v1/rack/slots/<int:slot_num>/clear", api.ClearView.as_view(), name="clear"),
+            path("api/v1/rack/locates/ack", api.LocateAckView.as_view(), name="locates-ack"),
             path("api/v1/barcode/resolve", api.ResolveView.as_view(), name="resolve"),
             path("api/v1/pickjobs", api.PickJobsView.as_view(), name="pickjobs"),
             path("api/v1/racks", api.RacksView.as_view(), name="racks"),
@@ -116,3 +128,21 @@ class SmartReelPlugin(UserInterfaceMixin, UrlsMixin, SettingsMixin, InvenTreePlu
             })
 
         return panels
+
+    # -- LocateMixin -------------------------------------------------------
+    #
+    # The "locate" button in the InvenTree web UI POSTs to the core locate
+    # endpoint, which offloads locate_stock_item / locate_stock_location to a
+    # background worker (group='plugin'). We don't drive the rack directly:
+    # each call records a pending "light slot N" request on the owning rack's
+    # metadata, which the HMI picks up from its GET /rack poll (`locates`) and
+    # acks via POST /rack/locates/ack. See services.py and docs/hmi-plugin-api.md.
+
+    def locate_stock_item(self, item_pk):
+        """Light the slot holding StockItem `item_pk`, if it lives in a rack."""
+        return services.locate_stock_item_pk(item_pk)
+
+    def locate_stock_location(self, location_pk):
+        """Light the slot for StockLocation `location_pk` (a rack slot), or all
+        occupied slots if `location_pk` is a rack itself."""
+        return services.locate_stock_location_pk(location_pk)

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import datetime
 
+from django.db import transaction
 from django.utils import timezone
 
 from rest_framework import permissions, status
@@ -173,6 +174,22 @@ class ClearView(SmartReelAPIView):
         )
 
 
+class LocateAckView(SmartReelAPIView):
+    """POST /rack/locates/ack — drop consumed locate requests.
+
+    The HMI calls this after it has lit (or finished lighting) the slots the
+    plugin queued via the InvenTree locate button. Body: {"ids": [1, 2]} to
+    ack specific requests, or {} / {"ids": []} to clear the whole queue.
+    Returns the remaining queue. Idempotent by construction (set difference)."""
+
+    def post(self, request):
+        ids = (request.data or {}).get("ids")
+        if ids is not None and not isinstance(ids, list):
+            raise ValueError("'ids' must be a list of locate ids")
+        rack = self.rack(request)
+        return Response(services.ack_locates(rack, ids))
+
+
 class PickJobsView(SmartReelAPIView):
     """GET /pickjobs — jobs targeted at this token's rack.
     GET /pickjobs?all=1 — every rack's jobs (web panel; no token needed)."""
@@ -291,17 +308,27 @@ class ProvisionView(SmartReelAPIView):
 
         token_name = f"smartreel-rack-{rack.pk}"
         rotate = request.query_params.get("rotate") in ("1", "true")
-        qs = ApiToken.objects.filter(user=request.user, name=token_name)
-        token = qs.first()
-        if rotate and token is not None:
-            qs.delete()
-            token = None
-        if token is None:
-            token = ApiToken.objects.create(
-                user=request.user,
-                name=token_name,
-                expiry=timezone.now().date() + datetime.timedelta(days=3650),
-            )
+        # Serialize concurrent provisioning of the same rack. ApiToken has no
+        # unique constraint on (user, name), so two requests could each see no
+        # token and both create one (duplicate tokens for one rack). There is
+        # no existing token row to lock first-time, so we lock the rack's own
+        # StockLocation row — stable and unique per rack — which serializes any
+        # concurrent provision of the same rack. Behavior is otherwise
+        # unchanged (rotate still deletes + recreates).
+        from stock.models import StockLocation
+        with transaction.atomic():
+            StockLocation.objects.select_for_update().get(pk=rack.pk)
+            qs = ApiToken.objects.filter(user=request.user, name=token_name)
+            token = qs.first()
+            if rotate and token is not None:
+                qs.delete()
+                token = None
+            if token is None:
+                token = ApiToken.objects.create(
+                    user=request.user,
+                    name=token_name,
+                    expiry=timezone.now().date() + datetime.timedelta(days=3650),
+                )
         # Bind this token to the rack it controls (multi-unit identity).
         token.set_metadata(services.TOKEN_RACK_KEY, rack.pk)
 
