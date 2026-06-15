@@ -79,3 +79,7 @@ labels/*.dxf
 *working_backup*
 *_predupe*
 SmartReel V2.kicad_pcb
+
+# IDE / editor
+.idea/
+.vscode/
