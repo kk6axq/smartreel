@@ -9,11 +9,14 @@
 #include "ui/widgets.h"
 #include "ui/theme.h"
 #include "ui/app_state.h"
+#include "ui/notify.h"
 #include "storage/state_store.h"
 #include "app/leds.h"
+#include "app/beeper.h"
 #include "app/inv_sync.h"
 #include "net/inv_api.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -36,8 +39,16 @@ static void free_start_ctx(lv_event_t* e) {
 }
 
 // Manual force-refresh: bypasses the throttle. The result lands via
-// dispatch and rebuilds this screen with the live list.
+// dispatch and rebuilds this screen with the live list. The throttled
+// auto-refresh gave no feedback, so a tap could look dead (review item 8):
+// acknowledge the tap immediately with a toast + tick, then force-fetch.
 static void on_jobs_refresh(lv_event_t*) {
+    beeper::click();
+    if (!inv_sync::online()) {
+        ui::toast("Offline -- can't refresh jobs", ui::NotifyMood::Warn);
+        return;
+    }
+    ui::toast("Refreshing jobs...", ui::NotifyMood::Info, 1500);
     inv_sync::request_jobs_refresh(/*force=*/true);
 }
 
@@ -103,40 +114,18 @@ void build_pick_list(lv_obj_t* body) {
 }
 
 // ---- pick-active --------------------------------------------------
-struct PickedCtx { int item_idx; };
-
-static void on_picked(lv_event_t* e) {
-    auto* c = static_cast<PickedCtx*>(lv_event_get_user_data(e));
-    if (!c) return;
-    auto& st = app::state();
-    if (st.active_pick_idx < 0) return;
-    auto& j = st.pick_jobs[st.active_pick_idx];
-    if (c->item_idx < 0 || c->item_idx >= j.n_items) return;
-    const int slot_num = j.items[c->item_idx].slot_num;
-    app::lock();
-    j.items[c->item_idx].picked = true;
-    app::unlock();
-    state_store::mark_jobs_dirty();
-    // Manual confirm path (no slot sensor fired). Report the same
-    // whole-reel transfer the hardware path would; mirror the local
-    // slot bookkeeping too so the rack doesn't think the reel stayed.
-    if (slot_num > 0) {
-        app::Slot* s = app::slot_by_num(slot_num);
-        if (s) {
-            app::lock();
-            s->state      = app::SlotState::EMPTY;   // reel is gone -> staging
-            s->part.valid = false;
-            s->qty        = 0;
-            app::unlock();
-            state_store::mark_slot_dirty(slot_num);
-        }
-        leds::light_slot(slot_num, 0, 0, 0);   // reel out: darken its LED
-        inv_sync::queue_job_pick(j.id, c->item_idx, slot_num);
-    }
-    ui::rebuild_current();
-}
-static void free_picked_ctx(lv_event_t* e) {
-    delete static_cast<PickedCtx*>(lv_event_get_user_data(e));
+// Right-aligned per-line status (review item 13: the confusing "Picked"
+// button is gone; a line just goes green when its reel is physically
+// pulled). Picking is driven by the reel-presence sensor in main.cpp's
+// apply_slot_change(), not a tap, so there's no per-row action button.
+static void row_add_status(lv_obj_t* row, const char* text, lv_color_t col) {
+    lv_obj_t* l = lv_label_create(row);
+    lv_label_set_text(l, text);
+    lv_obj_set_style_text_font(l, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(l, col, 0);
+    lv_obj_set_style_min_width(l, 160, 0);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_width(l, 160);
 }
 
 // Cancel the active job: revert any still-TARGET slots to OCCUPIED
@@ -184,6 +173,8 @@ static void complete_active_job(lv_event_t*) {
     state_store::mark_all_slots_dirty();
     leds::clear_all();
     inv_sync::request_jobs_refresh(/*force=*/true);   // done job drops off the list
+    beeper::ok();
+    ui::toast("Pick job complete", ui::NotifyMood::Success);
     ui::navigate(Screen::PickList);
 }
 
@@ -237,11 +228,26 @@ void build_pick_active(lv_obj_t* body) {
     int pct = j.n_items > 0 ? (done * 100 / j.n_items) : 0;
     progress_bar(head, pct);
 
-    // List of items
+    // List of items, ordered by slot number so the operator walks the rack
+    // left-to-right (review item 12). Located lines (slot > 0) sort ascending;
+    // unlocated lines ("not in rack") sink to the bottom.
+    int order[16];
+    const int n = j.n_items < 16 ? j.n_items : 16;
+    for (int i = 0; i < n; ++i) order[i] = i;
+    auto key = [&](int idx) {
+        int s = j.items[idx].slot_num;
+        return s > 0 ? s : INT_MAX;
+    };
+    for (int a = 1; a < n; ++a) {            // insertion sort (n <= 16)
+        int v = order[a], k = key(v), b = a - 1;
+        while (b >= 0 && key(order[b]) > k) { order[b + 1] = order[b]; --b; }
+        order[b + 1] = v;
+    }
+
     lv_obj_t* sc = row_scroller(body);
     lv_obj_set_flex_grow(sc, 1);
-    for (int i = 0; i < j.n_items; ++i) {
-        auto& it = j.items[i];
+    for (int o = 0; o < n; ++o) {
+        auto& it = j.items[order[o]];
 
         RowOpts ro;
         if (it.picked)            ro.stripe_state = app::SlotState::PICKED;
@@ -255,28 +261,25 @@ void build_pick_active(lv_obj_t* body) {
         else                 snprintf(tag, sizeof(tag), "-");
         row_add_slot_num(row, tag);
 
-        char meta[64];
-        snprintf(meta, sizeof(meta), "%s  need %d", it.part_id, it.qty);
+        // No qty column (review item 14: whole-reel picks, count is noise).
         row_add_main_two_line(row,
                               it.part_name[0] ? it.part_name : it.part_id,
-                              meta);
+                              it.part_id);
 
-        char qb[12]; snprintf(qb, sizeof(qb), "%d", it.qty);
-        row_add_qty_two_line(row, qb, "qty");
-
-        auto* ctx = new PickedCtx{ i };
-        lv_obj_t* b = row_add_button(row, it.picked ? "Done" : "Picked",
-                                      it.picked ? nullptr : on_picked,
-                                      ctx,
-                                      /*muted=*/false,
-                                      /*success=*/it.picked,
-                                      /*disabled=*/it.picked);
-        lv_obj_add_event_cb(b, free_picked_ctx, LV_EVENT_DELETE, ctx);
+        // Status goes green when the reel is pulled (review item 13).
+        if (it.picked)
+            row_add_status(row, "Done", theme::color::slot_picked());
+        else if (it.slot_num > 0)
+            row_add_status(row, "Pending", theme::color::text_muted());
+        else
+            row_add_status(row, "Not in rack", theme::color::slot_error());
     }
 
-    // Bottom action bar: Cancel always; Complete once every item is
-    // picked (each pick was already reported to InvenTree, so Complete is
-    // local cleanup that frees the picked slots and returns to the list).
+    // Bottom action bar. Cancel is offered only while the job is still in
+    // progress; once every line is picked the reels are physically gone and
+    // there's nothing to cancel, so only "Complete job" remains (review
+    // item 15). Cancel = "abandon the job, leave reels in place" (un-targets
+    // the slots, no inventory change). Complete = "finish, free picked slots".
     lv_obj_t* actions = lv_obj_create(body);
     lv_obj_remove_style_all(actions);
     lv_obj_set_size(actions, LV_PCT(100), LV_SIZE_CONTENT);
@@ -292,9 +295,10 @@ void build_pick_active(lv_obj_t* body) {
                                     LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(actions, LV_OBJ_FLAG_SCROLLABLE);
 
-    button(actions, "Cancel job", BtnKind::Danger, cancel_active_job);
     if (j.n_items > 0 && done >= j.n_items) {
         button(actions, "Complete job", BtnKind::Success, complete_active_job);
+    } else {
+        button(actions, "Cancel job", BtnKind::Danger, cancel_active_job);
     }
 }
 

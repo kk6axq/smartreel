@@ -427,4 +427,26 @@ void mock_resolve_anomaly() {
     unlock();
 }
 
+void raise_removed_anomaly(int slot_num) {
+    State& st = state();
+    lock();
+    Anomaly& a = st.anomaly;
+    anomaly_set(a, AnomalyKind::Removed, AnomalyMood::Error,
+                "Reel removed",
+                "A reel was pulled from a slot with no active pick job. "
+                "Replace it, or unload it from inventory.");
+    a.slot_num = slot_num;
+    const Slot* s = slot_by_num(slot_num);
+    char buf[64];
+    if (s) {
+        snprintf(buf, sizeof(buf), "#%d (chain %d)", s->slot, s->chain);
+        anomaly_kv(a, "Slot", buf);
+        anomaly_kv(a, "Part", s->part.valid ? s->part.name : "unknown");
+    }
+    anomaly_kv(a, "Action", "Replace the reel, or unload it");
+    st.anomaly_visible = true;
+    unlock();
+    state_store::log_anomaly(a);
+}
+
 } // namespace app

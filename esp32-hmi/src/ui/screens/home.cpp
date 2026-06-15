@@ -26,7 +26,6 @@ static void on_load(lv_event_t*) {
 }
 static void on_view(lv_event_t*)      { ui::navigate(Screen::View); }
 static void on_pick(lv_event_t*)      { ui::navigate(Screen::PickList); }
-static void on_rack(lv_event_t*)      { ui::navigate(Screen::RackGrid); }
 static void on_settings(lv_event_t*)  { ui::navigate(Screen::Configure); }
 
 void build_home(lv_obj_t* body) {
@@ -58,15 +57,16 @@ void build_home(lv_obj_t* body) {
     };
 
     // Sublabels stay terse: at 24pt a 3-column tile fits ~2 short words
-    // per line before wrapping eats the tile height.
-    place(mktile("Load",     "Scan a reel",  on_load),     0, 0);
-    place(mktile("View",     "Browse parts", on_view),     1, 0);
-    place(mktile("Pick",     "Pick jobs",    on_pick),     2, 0);
-    place(mktile("Rack",     "",             on_rack),     0, 1);
-    place(mktile("Settings", "Setup",        on_settings), 1, 1, 2);
+    // per line before wrapping eats the tile height. Rack overview is no
+    // longer a top-level tile (review item 1) -- it lives under View, whose
+    // sublabel now advertises it.
+    place(mktile("Load",     "Scan a reel",   on_load),     0, 0);
+    place(mktile("View",     "Parts & rack",  on_view),     1, 0);
+    place(mktile("Pick",     "Pick jobs",     on_pick),     2, 0);
+    place(mktile("Settings", "Setup",         on_settings), 0, 1, 3);
 }
 
-// ---- Rack occupancy screen (the dot grid's new home) ----------------
+// ---- Rack occupancy screen (reached from View now) ------------------
 void build_rack_grid(lv_obj_t* body) {
     lv_obj_set_flex_flow(body, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_all(body, 10, 0);

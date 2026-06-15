@@ -95,6 +95,9 @@ struct Anomaly {
     char             message[160];
     AnomalyDetailRow detail[6];
     int              n_detail;
+    int              slot_num = 0;   // offending logical slot (0 = unknown);
+                                     // lets the modal act on the real slot
+                                     // (e.g. gated inventory unload, item 3)
 };
 
 // ---- Load workflow scratch ---------------------------------------
@@ -225,5 +228,11 @@ void mock_cancel_load();
 void mock_start_pick(int idx);
 void mock_raise_anomaly(AnomalyKind k);
 void mock_resolve_anomaly();
+
+// Raise a "reel removed" anomaly tied to a REAL slot (vs mock_raise_anomaly,
+// which fabricates example content). Fills accurate slot/part detail and
+// anomaly.slot_num so the modal can offer a gated inventory unload for that
+// exact slot (review item 3). The caller opens the modal.
+void raise_removed_anomaly(int slot_num);
 
 } // namespace app

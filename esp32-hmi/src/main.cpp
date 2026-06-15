@@ -56,7 +56,9 @@
 #include "app/hw_mirror.h"
 #include "app/slot_map.h"
 #include "app/leds.h"
+#include "app/beeper.h"
 #include "app/inv_sync.h"
+#include "ui/notify.h"
 
 // ===================================================================
 // Serial console.
@@ -231,6 +233,25 @@ static uint32_t be32_at(const uint8_t* p) {
            ((uint32_t)p[2] << 8)  |  (uint32_t)p[3];
 }
 
+// Red "alarm" flash for a slot with an unresolved illegal removal (review
+// item 2). Set when an inventoried reel is pulled with no active workflow;
+// the 500 ms tick flashes the slot red until the anomaly is resolved (the
+// slot leaves ERROR via the modal's replace/unload action), then self-clears.
+static int  g_alarm_slot  = -1;
+static bool g_alarm_phase = false;
+static void alarm_flash_tick(lv_timer_t*) {
+    if (g_alarm_slot < 0) return;
+    const app::Slot* s = app::slot_by_num(g_alarm_slot);
+    if (!s || s->state != app::SlotState::ERROR) {
+        leds::light_slot(g_alarm_slot, 0, 0, 0);
+        g_alarm_slot = -1;
+        return;
+    }
+    g_alarm_phase = !g_alarm_phase;
+    if (g_alarm_phase) leds::light_slot(g_alarm_slot, 0xEF, 0x44, 0x44);  // red
+    else               leds::light_slot(g_alarm_slot, 0, 0, 0);
+}
+
 // Apply one slot's transition. Runs on the LVGL task; takes the
 // app_state lock for its mutations.
 static void apply_slot_change(int slot_num, bool now_present) {
@@ -270,6 +291,11 @@ static void apply_slot_change(int slot_num, bool now_present) {
                 // out for free -- each removed reel is reported as it
                 // happens, so cancelling later moves nothing extra.
                 inv_sync::queue_job_pick(job.id, i, slot_num);
+                // Confirm the pick to the operator (review item 7).
+                beeper::ok();
+                char tmsg[40];
+                snprintf(tmsg, sizeof(tmsg), "Picked slot #%d", slot_num);
+                ui::toast(tmsg, ui::NotifyMood::Success);
                 // Reflect the pick immediately on the Pick screen (row ->
                 // Done, progress bar advances) instead of waiting for a
                 // manual tap or the next rebuild.
@@ -286,8 +312,8 @@ static void apply_slot_change(int slot_num, bool now_present) {
     if (now_present && st.load_step == app::LoadStep::Placed
         && slot->state == app::SlotState::TARGET) {
         app::mock_place_reel(slot_num);
-        leds::clear_all();              // drop the lit placement targets
-        ui::navigate(ui::Screen::Home); // finish the load workflow
+        ui::screens::load_confirm_placed(slot_num);  // green flash + tone + toast
+        ui::navigate(ui::Screen::Home);              // finish the load workflow
         expected = true;
     }
 
@@ -297,6 +323,12 @@ static void apply_slot_change(int slot_num, bool now_present) {
     if (!now_present && slot_num == st.pick_out_slot) {
         app::finish_pick_out(slot_num);
         leds::light_slot(slot_num, 0, 0, 0);
+        beeper::ok();
+        // If the View-screen "remove the reel" prompt is up for this slot,
+        // flip it to a success confirmation and auto-close (review item 16);
+        // otherwise just toast.
+        if (ui::pick_prompt_active(slot_num)) ui::pick_prompt_done(slot_num);
+        else                                  ui::toast("Reel picked", ui::NotifyMood::Success);
         if (ui::current() == ui::Screen::View) ui::rebuild_current();
         expected = true;
     }
@@ -322,18 +354,23 @@ static void apply_slot_change(int slot_num, bool now_present) {
     }
 
     if (slot->part.valid) {
+        char detail[64];
+        snprintf(detail, sizeof(detail), "unexpected removal of %s", slot->part.id);
         app::lock();
         slot->state = app::SlotState::ERROR;
         app::unlock();
         state_store::mark_slot_dirty(slot_num);
-        ui::anomaly_modal_raise(app::AnomalyKind::Removed);
-        // Reconcile server-side: the reel is physically gone, so its
-        // stock moves to the "pulled" bin rather than silently rotting
-        // in the slot location (contract: POST /rack/slots/n/clear).
-        char detail[64];
-        snprintf(detail, sizeof(detail), "unexpected removal of %s", slot->part.id);
+        // Slot-accurate anomaly + flashing-red slot (review item 2) + tone.
+        app::raise_removed_anomaly(slot_num);
+        ui::status_bar_set_anomaly_count(1);
+        ui::anomaly_modal_open_current();
+        g_alarm_slot = slot_num;
+        beeper::error();
+        // Log the anomaly to InvenTree, but do NOT move the stock here. The
+        // inventory unload is now an explicit, confirmed action in the
+        // anomaly modal (review item 3) -- a flaky sensor or a quickly
+        // replaced reel must not silently delete stock.
         inv_sync::queue_anomaly("removed", slot_num, detail);
-        inv_sync::queue_clear(slot_num, "anomaly:removed");
     } else {
         app::lock();
         slot->state = app::SlotState::EMPTY;
@@ -561,6 +598,43 @@ static void on_rs485_event(const rs485::Event& e, void* /*user*/) {
     }
 }
 
+// Boot reconciliation of inventory occupancy against the physical reel
+// buttons (review item 18). A slot can be OCCUPIED in persisted/InvenTree
+// state yet have no reel physically present -- a "phantom" left over from a
+// reel pulled while the HMI was powered off. Silently trusting inventory
+// leaves a phantom occupied slot forever. We flag each phantom (ERROR +
+// anomaly log) and surface the first for the operator to replace or unload;
+// we never auto-delete stock (a transient bus read must not destroy
+// inventory). Only runs when the hardware mirror is valid -- if the Core is
+// absent we genuinely can't tell present from absent.
+static void reconcile_boot_occupancy() {
+    if (!hw_mirror::valid()) return;
+    app::State& st = app::state();
+    int phantoms = 0, first = -1;
+    for (int i = 0; i < st.n_rack; ++i) {
+        app::Slot& s = st.rack[i];
+        if (s.state != app::SlotState::OCCUPIED || !s.part.valid) continue;
+        if (logical_present(s)) continue;                  // reel really there
+        app::lock();
+        s.state = app::SlotState::ERROR;
+        app::unlock();
+        state_store::mark_slot_dirty(s.slot);
+        inv_sync::queue_anomaly("phantom", s.slot, "occupied at boot, no reel present");
+        Serial.printf("[hmi] boot phantom: slot %d occupied in inventory but no reel present\n",
+                      s.slot);
+        if (first < 0) first = s.slot;
+        phantoms++;
+    }
+    if (first > 0) {
+        app::raise_removed_anomaly(first);
+        ui::status_bar_set_anomaly_count(1);
+        ui::anomaly_modal_open_current();
+        g_alarm_slot = first;
+        beeper::warn();
+        Serial.printf("[hmi] boot: %d phantom slot(s) flagged for review\n", phantoms);
+    }
+}
+
 void setup() {
     Serial.begin(115200);
     delay(50);
@@ -622,6 +696,7 @@ void setup() {
     theme::init();
     ui::init();
     ui::status_bar_set_sd_missing(!sd_ok);
+    beeper::init();               // audio-feedback seam (review item 5)
     Serial.println("[boot] UI ready");
 
     // 8) WiFi (non-blocking; events drive app_state.online + status bar)
@@ -669,6 +744,13 @@ void setup() {
     // its 100 ms settle tick on the LVGL task.
     presence_debounce_reset();
     lv_timer_create(presence_debounce_tick, 100, nullptr);
+
+    // Red alarm-flash tick for unresolved illegal removals (review item 2).
+    lv_timer_create(alarm_flash_tick, 500, nullptr);
+
+    // Reconcile inventory occupancy against the physical buttons now that the
+    // rack is built, state is loaded, and presence is baselined (review item 18).
+    reconcile_boot_occupancy();
 
     // LVGL runs on its own task pinned to APP_CPU so the RGB DMA
     // refresh on PRO_CPU isn't disrupted.

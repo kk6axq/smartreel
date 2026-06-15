@@ -13,10 +13,12 @@
 #include "ui/widgets.h"
 #include "ui/theme.h"
 #include "ui/app_state.h"
+#include "ui/notify.h"
 #include "sensors/qr_scanner.h"
 #include "net/inv_api.h"
 #include "util/lvgl_async.h"
 #include "app/leds.h"
+#include "app/beeper.h"
 
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
@@ -49,16 +51,34 @@ namespace {
     // the scanner re-reports the same code 5 times/sec while we're
     // already working on it.
     char g_last_resolve_qr[64] = {};
+
+    // Scan errors used to vanish the instant the reel moved out of view
+    // (the next poll overwrote them with "Watching..."). Hold an error on
+    // screen for at least this long so the operator can read it (review
+    // item 20). A non-error status is suppressed until the dwell elapses.
+    constexpr uint32_t ERROR_DWELL_MS = 2500;
+    uint32_t g_error_until_ms = 0;
 }
 
 // Set the watching-view status line, skipping the redraw if unchanged.
+// warn=true starts an error dwell; a non-warn update is held off until the
+// dwell elapses so a transient "Watching..." can't wipe the error early.
 static void set_status(const char* text, bool warn) {
     if (!g_status_lbl) return;
+    const uint32_t now = millis();
+    if (warn) g_error_until_ms = now + ERROR_DWELL_MS;
+    else if ((int32_t)(g_error_until_ms - now) > 0) return;   // keep error up
     if (strcmp(g_status_cache, text) == 0) return;
     snprintf(g_status_cache, sizeof(g_status_cache), "%s", text);
     lv_label_set_text(g_status_lbl, text);
     lv_obj_set_style_text_color(g_status_lbl,
                                 warn ? color::slot_warn() : color::text_muted(), 0);
+}
+
+// Error status + error tone (review items 5, 20).
+static void scan_error(const char* text) {
+    set_status(text, true);
+    beeper::error();
 }
 
 // ---- Resolve worker ------------------------------------------------
@@ -131,7 +151,7 @@ static void on_resolve_done(void* user) {
                     char msg[96];
                     snprintf(msg, sizeof(msg), "%s is already in slot %d",
                              r.stock.part.id, r.stock.slot_num);
-                    set_status(msg, true);
+                    scan_error(msg);
                     break;
                 }
                 app::Part p; copy_part(p, r.stock.part);
@@ -148,20 +168,20 @@ static void on_resolve_done(void* user) {
                 snprintf(msg, sizeof(msg),
                          "%s is a part code, not a reel. Scan the reel's "
                          "stock-item QR instead.", r.part.id);
-                set_status(msg, true);
+                scan_error(msg);
                 break;
             }
             if (r.type == inv_api::ResolveType::Location) {
                 LOAD_LOG("resolved LOCATION -- not a stock item, refusing load");
-                set_status("That's a location code, not a reel. Scan the "
-                           "reel's stock-item QR.", true);
+                scan_error("That's a location code, not a reel. Scan the "
+                           "reel's stock-item QR.");
                 break;
             }
             // type=unknown -- server rejected the code.
             LOAD_LOG("resolve: unknown code '%.40s'", d->qr);
             char msg[96];
             snprintf(msg, sizeof(msg), "Unrecognised code: %.40s", d->qr);
-            set_status(msg, true);
+            scan_error(msg);
             // Allow the same code to be tried again only after the
             // scanner has reported a different one in the meantime.
             break;
@@ -180,7 +200,7 @@ static void on_resolve_done(void* user) {
             char msg[96];
             snprintf(msg, sizeof(msg), "Resolve failed: %.60s",
                      r.error[0] ? r.error : inv_api::status_str(r.status));
-            set_status(msg, true);
+            scan_error(msg);
             // Clear g_last_resolve_qr so a retry of the same code does
             // re-fire after a transient failure.
             g_last_resolve_qr[0] = 0;
@@ -282,11 +302,34 @@ static void on_cancel(lv_event_t*) {
     leds::clear_all();               // drop any lit placement targets
     ui::go_back();
 }
+// One-shot: clear a slot's confirmation LED a couple seconds after a load
+// (review item 4). Allocated per use; freed here.
+struct GreenClearCtx { int slot; };
+static void green_clear_cb(lv_timer_t* t) {
+    auto* c = static_cast<GreenClearCtx*>(t->user_data);
+    if (c) { leds::light_slot(c->slot, 0, 0, 0); delete c; }
+    lv_timer_del(t);
+}
+// Confirm a successful load: flash the slot green for 2 s, tone, and toast
+// (review item 4). Shared by the on-screen dot pick and the hardware
+// (reel-inserted) placement path in main.cpp.
+void load_confirm_placed(int slot_num) {
+    leds::clear_all();                                   // drop the blue targets
+    leds::light_slot(slot_num, 0x16, 0xA3, 0x4A);        // theme green
+    auto* c = new GreenClearCtx{ slot_num };
+    lv_timer_t* t = lv_timer_create(green_clear_cb, 2000, c);
+    lv_timer_set_repeat_count(t, 1);
+    beeper::ok();
+    char msg[40];
+    snprintf(msg, sizeof(msg), "Loaded to slot #%d", slot_num);
+    ui::toast(msg, ui::NotifyMood::Success);
+}
+
 static void on_dot_pick(int slot_num) {
     LOAD_LOG("place (on-screen dot) slot=%d stock_id=%d",
              slot_num, app::state().load_stock_id);
     app::mock_place_reel(slot_num);  // logs '[inv] queue assign' when stock_id>0
-    leds::clear_all();               // drop the lit placement targets
+    load_confirm_placed(slot_num);   // green flash + tone + toast (item 4)
     ui::navigate(Screen::Home);
 }
 
@@ -312,7 +355,7 @@ static void build_watching_state(lv_obj_t* body) {
     lv_obj_center(qr_l);
 
     lv_obj_t* prompt = lv_label_create(body);
-    lv_label_set_text(prompt, "Scan part barcode");
+    lv_label_set_text(prompt, "Scan reel barcode");
     lv_obj_set_style_text_font(prompt, &lv_font_montserrat_36, 0);
     lv_obj_set_style_text_color(prompt, color::text(), 0);
 
@@ -345,7 +388,25 @@ static void build_placed_state(lv_obj_t* body) {
     auto& part = app::state().load_part;
     int lit = app::slots_target();
 
-    // Scan-result card
+    // Primary call-to-action, big and at the very top (review item 19).
+    lv_obj_t* head = lv_label_create(body);
+    lv_label_set_text(head, "Place reel in any lit slot");
+    lv_obj_set_style_text_font(head, &lv_font_montserrat_48, 0);
+    lv_obj_set_style_text_color(head, color::text(), 0);
+    lv_obj_set_style_text_align(head, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(head, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(head, LV_PCT(100));
+
+    char sub[48];
+    snprintf(sub, sizeof(sub), "%d slot%s available", lit, lit == 1 ? "" : "s");
+    lv_obj_t* subl = lv_label_create(body);
+    lv_label_set_text(subl, sub);
+    lv_obj_set_style_text_font(subl, &lv_font_montserrat_28, 0);
+    lv_obj_set_style_text_color(subl, color::text_muted(), 0);
+    lv_obj_set_style_text_align(subl, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(subl, LV_PCT(100));
+
+    // Scan-result card (what was scanned -- secondary to the heading above)
     lv_obj_t* res = card(body);
     lv_obj_set_width(res, LV_PCT(100));
 
@@ -364,37 +425,6 @@ static void build_placed_state(lv_obj_t* body) {
     lv_label_set_text(mt, meta);
     lv_obj_set_style_text_font(mt, &lv_font_montserrat_24, 0);
     lv_obj_set_style_text_color(mt, color::text_muted(), 0);
-
-    // Target row inside card (small target dot + instruction)
-    lv_obj_t* tgt = lv_obj_create(res);
-    lv_obj_remove_style_all(tgt);
-    lv_obj_set_size(tgt, LV_PCT(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_border_side(tgt, LV_BORDER_SIDE_TOP, 0);
-    lv_obj_set_style_border_color(tgt, color::border(), 0);
-    lv_obj_set_style_border_width(tgt, 1, 0);
-    lv_obj_set_style_pad_top(tgt, 10, 0);
-    lv_obj_set_flex_flow(tgt, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(tgt, LV_FLEX_ALIGN_START,
-                               LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_gap(tgt, 10, 0);
-    lv_obj_clear_flag(tgt, LV_OBJ_FLAG_SCROLLABLE);
-
-    lv_obj_t* swatch = lv_obj_create(tgt);
-    lv_obj_remove_style_all(swatch);
-    lv_obj_add_style(swatch, const_cast<lv_style_t*>(&theme::s().dot_target), 0);
-    lv_obj_set_size(swatch, 14, 14);
-    lv_obj_clear_flag(swatch, LV_OBJ_FLAG_SCROLLABLE);
-
-    char hint[80];
-    snprintf(hint, sizeof(hint),
-             "Place reel in any lit slot - %d slot%s available",
-             lit, lit == 1 ? "" : "s");
-    lv_obj_t* tt = lv_label_create(tgt);
-    lv_label_set_text(tt, hint);
-    lv_obj_set_style_text_font(tt, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(tt, color::text(), 0);
-    lv_obj_set_flex_grow(tt, 1);
-    lv_label_set_long_mode(tt, LV_LABEL_LONG_DOT);
 
     // Clickable dot grid (only TARGET dots respond)
     DotGridOpts dg = {};

@@ -11,6 +11,10 @@ namespace ui::screens {
 
 void build_home(lv_obj_t* body);
 void build_load(lv_obj_t* body);
+// Confirm a successful load on `slot_num`: green LED flash + tone + toast
+// (review item 4). Called from the Load screen's on-screen dot pick and from
+// main.cpp's hardware reel-inserted placement path.
+void load_confirm_placed(int slot_num);
 void build_view(lv_obj_t* body);
 void build_rack_grid(lv_obj_t* body);
 void build_pick_list(lv_obj_t* body);

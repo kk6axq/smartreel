@@ -13,9 +13,11 @@
 #include "ui/screen_manager.h"
 #include "ui/widgets.h"
 #include "ui/app_state.h"
+#include "ui/notify.h"
 #include "app/leds.h"
 #include "app/inv_sync.h"
 
+#include <stdint.h>
 #include <stdio.h>
 
 namespace ui::screens {
@@ -56,6 +58,17 @@ static void free_find_ctx(lv_event_t* e) {
 // drops the light and clears the pending marker.
 struct SlotCtx { int slot_num; };
 
+// Cancel from the pick-prompt modal (review item 16): drop the light and
+// disarm. Runs when the operator dismisses the "remove the reel" popup
+// before pulling the reel. The hardware-removal path (main.cpp) flips the
+// same modal to a success confirmation instead of calling this.
+static void on_prompt_cancel(void* user) {
+    const int slot = (int)(intptr_t)user;
+    leds::light_slot(slot, 0, 0, 0);
+    app::cancel_pick_out();
+    if (ui::current() == ui::Screen::View) ui::rebuild_current();
+}
+
 static void on_pick(lv_event_t* e) {
     auto* c = static_cast<SlotCtx*>(lv_event_get_user_data(e));
     if (!c) return;
@@ -65,6 +78,11 @@ static void on_pick(lv_event_t* e) {
     if (prev > 0 && prev != c->slot_num) leds::light_slot(prev, 0, 0, 0);
     app::begin_pick_out(c->slot_num);
     leds::light_slot(c->slot_num, 0x25, 0x63, 0xEB);   // theme blue
+    // Pop the "remove the reel" prompt (review item 16). The modal backdrop
+    // covers the inline Pick/Cancel toggle; pulling the reel confirms and
+    // closes it via main.cpp's finish_pick_out path.
+    ui::pick_prompt_open(c->slot_num, on_prompt_cancel,
+                         (void*)(intptr_t)c->slot_num);
     ui::rebuild_current();
 }
 static void on_pick_cancel(lv_event_t* e) {
@@ -78,8 +96,25 @@ static void free_slot_ctx(lv_event_t* e) {
     delete static_cast<SlotCtx*>(lv_event_get_user_data(e));
 }
 
+// Rack overview is reached from here now (review item 1: Rack is a
+// sub-page of View, not a peer tile on Home).
+static void on_rack_view(lv_event_t*) { ui::navigate(ui::Screen::RackGrid); }
+
 void build_view(lv_obj_t* body) {
     lv_obj_t* sc = row_scroller(body);
+
+    // Rack overview lives under View now (review item 1). A right-aligned
+    // header button drills into the spatial dot-grid; back returns here.
+    {
+        lv_obj_t* hdr = lv_obj_create(sc);
+        lv_obj_remove_style_all(hdr);
+        lv_obj_set_size(hdr, LV_PCT(100), LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_END,
+                                   LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
+        button(hdr, "Rack overview", BtnKind::Default, on_rack_view);
+    }
 
     const bool online = inv_sync::online();
     if (!online) {
