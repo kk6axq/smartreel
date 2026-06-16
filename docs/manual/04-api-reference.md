@@ -86,6 +86,16 @@ Used at boot and for periodic reconciliation. Doubles as the reconcile source
 }
 ```
 
+#### `GET /rack/occupancy` — cheap occupancy fingerprint
+```jsonc
+{ "rev": "9f2a1c0b4d7e6f81" }
+```
+An opaque hash over the rack's slot occupancy (+ pending locates). The HMI polls
+this every ~5s and runs the full `GET /rack` reconcile only when `rev` changes,
+so a reel moved out of a slot in InvenTree is detected within ~10s without a full
+snapshot each poll (item 6). Compare for equality only; the value is not stable
+across server versions.
+
 #### `POST /barcode/resolve` — what did I just scan?
 ```jsonc
 // req
@@ -179,21 +189,42 @@ if the slot was already empty (idempotent goal state).
 Validates the slot holds the item's part, performs a whole-reel pick to the
 job's destination, marks the item picked.
 
-#### `POST /pickjobs/from-build` — create a job from a Build Order
+#### `GET /pickjobs/options?build_id={id}` — candidate reels for a build
+```jsonc
+{
+  "lines": [
+    {
+      "part": 12, "part_id": "R-10K-0805", "part_name": "RES 10kohm 1% 0805",
+      "qty": 250,
+      "candidates": [
+        { "stock_id": 1001, "qty": 5000, "batch": "A",
+          "rack_id": 7, "rack_name": "Rack A", "slot_num": 3 }, ...
+      ]
+    }, ...
+  ]
+}
+```
+Web-panel endpoint (session auth). For each BOM line, every in-stock reel of
+that part that lives in **any** SmartReel rack — what the panel's reel picker
+offers (item 10a).
+
+#### `POST /pickjobs/from-build` — create jobs from a Build Order
 ```jsonc
 // req
-{ "build_id": 42, "rack_location_id": 7, "destination_id": null, "op_id": "..." }
+{ "build_id": 42, "stock_ids": [1001, 1002], "destination_id": null, "op_id": "..." }
 // resp
-{ ...job object... }
+{ "jobs": [ { ...job object (rack A)... }, { ...job object (rack B)... } ] }
 ```
-Web-panel endpoint (session auth). Requires an explicit `rack_location_id`
-(the panel has a rack selector). Creates/replaces a pick job with one item per
-BOM line. Stored on the Build's metadata.
+Web-panel endpoint (session auth). The selected reels are grouped by the rack
+that holds them, creating **one job per rack** (item 10b); each job item is
+pinned to its `stock_id`, so only that reel's slot lights. Replaces any prior
+SmartReel jobs on the build.
 
-#### `DELETE /pickjobs/{id}` — remove a job
+#### `DELETE /pickjobs/{id}` — remove a build's jobs
 ```jsonc
 { "deleted": "BO-0042" }
 ```
+Clears every rack's job for the build.
 
 #### `GET /racks` — list configured racks (web panel)
 ```jsonc
@@ -263,8 +294,8 @@ stores URL + token and immediately runs `GET /health`.
 - `/health` and `/barcode/resolve` are rack-independent (resolve only uses the
   rack to fill `slot_num`).
 - Pick jobs store a target rack pk; `GET /pickjobs` and `located_slots` are
-  scoped to the requesting token's rack. `POST /pickjobs/from-build` takes a
-  required `rack_location_id`. `GET /pickjobs?all=1` and `GET /racks` are for
+  scoped to the requesting token's rack. `POST /pickjobs/from-build` takes
+  `stock_ids` and fans out one job per rack. `GET /pickjobs?all=1` and `GET /racks` are for
   the web panel.
 
 ### A.6 Differences from `docs/hmi-plugin-api.md`

@@ -335,16 +335,24 @@ API token.
 - `/health` and `/barcode/resolve` are rack-independent (resolve only
   uses the rack to fill `slot_num`).
 - Pick jobs store a target rack pk; `GET /pickjobs` and `located_slots`
-  are scoped to the requesting token's rack. `POST /pickjobs/from-build`
-  takes a required `rack_location_id`; the Build Order panel has a rack
-  selector. `GET /pickjobs?all=1` (session) lists every rack's jobs for
-  the panel, and `GET /racks` lists configured racks.
+  are scoped to the requesting token's rack. A build can carry **one job
+  per rack**: the panel lists candidate reels (`GET /pickjobs/options`) and
+  `POST /pickjobs/from-build` takes `stock_ids`, grouping the selected reels
+  by the rack that holds them (each item pinned to its `stock_id`).
+  `GET /pickjobs?all=1` (session) lists every rack's jobs for the panel, and
+  `GET /racks` lists configured racks.
 - The provisioning panel appears on every stock-location page.
   `STAGING_LOCATION` / `PULLED_LOCATION` are instance-wide defaults a
   rack may override in its own metadata.
 
 ## Changelog
 
+- **2026-06-15**: review-feedback round. Added `GET /rack/occupancy` (cheap
+  fingerprint for ~10s move detection) and `GET /pickjobs/options` (candidate
+  reels per BOM line). `POST /pickjobs/from-build` now takes `stock_ids` and
+  fans out **one job per rack** (each item pinned to a `stock_id`) instead of a
+  single `rack_location_id` job; `DELETE /pickjobs/{id}` clears all of a build's
+  rack jobs.
 - **2026-06-13**: LocateMixin support — InvenTree's web-UI "locate" button
   (StockItem / StockLocation) now lights the slot on the physical rack.
   Locate requests ride on the `GET /rack` snapshot (`locates`) and are

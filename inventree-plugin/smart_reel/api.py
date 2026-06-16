@@ -231,7 +231,12 @@ class RacksView(SmartReelAPIView):
 
 
 class JobView(SmartReelAPIView):
-    """POST /pickjobs/from-build + DELETE /pickjobs/{id} (web panel)."""
+    """POST /pickjobs/from-build + DELETE /pickjobs/{id} (web panel).
+
+    Sending fans out one job per rack from the selected reels (review item 10):
+    body {"build_id": N, "stock_ids": [..], "op_id": ".."}. Each selected reel
+    is grouped by the rack that holds it.
+    """
 
     def post(self, request):
         from build.models import Build
@@ -241,24 +246,42 @@ class JobView(SmartReelAPIView):
         if build is None:
             raise LookupError(f"build {build_id} not found")
 
-        # Target rack is explicit (the panel's rack selector).
-        rack_id = self.require_int(request, "rack_location_id")
-        rack = services._loc_by_pk(rack_id)
-        if rack is None:
-            raise LookupError(f"rack location {rack_id} not found")
+        stock_ids = (request.data or {}).get("stock_ids")
+        if not isinstance(stock_ids, list) or not all(isinstance(s, int) for s in stock_ids):
+            raise ValueError("'stock_ids' must be a list of stock item ids")
 
         dest = (request.data or {}).get("destination_id")
         if dest is not None and not isinstance(dest, int):
             raise ValueError("invalid 'destination_id'")
         return self.idempotent(
             request,
-            lambda: services.create_job_from_build(build, request.user, rack, dest),
+            lambda: {"jobs": services.create_jobs_from_build(
+                build, request.user, stock_ids, dest)},
         )
 
     def delete(self, request, job_id: str):
         if not services.delete_job(job_id):
             raise LookupError(f"job {job_id} not found")
         return Response({"deleted": job_id})
+
+
+class BuildOptionsView(SmartReelAPIView):
+    """GET /pickjobs/options?build_id=N — candidate reels per BOM line.
+
+    Drives the panel's reel picker (review item 10a): every in-stock reel of
+    each BOM part that lives in a SmartReel rack, with its rack + slot."""
+
+    def get(self, request):
+        from build.models import Build
+
+        try:
+            build_id = int(request.query_params.get("build_id") or 0)
+        except (TypeError, ValueError):
+            build_id = 0
+        build = Build.objects.filter(pk=build_id).first()
+        if build is None:
+            raise LookupError(f"build {build_id} not found")
+        return Response({"lines": services.build_stock_options(build)})
 
 
 class LocateView(SmartReelAPIView):

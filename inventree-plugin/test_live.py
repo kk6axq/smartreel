@@ -241,19 +241,35 @@ def main():
                 {"op_id": f"t-{run}-c2", "reason": "anomaly:removed"}, token=rtok)
     check("clear empty idempotent", st == 200 and d.get("stock_id") is None, str(d))
 
-    # pick job from build (web-panel endpoint: explicit target rack)
-    st, d = req("POST", f"{P}/pickjobs/from-build",
-                {"build_id": build_pk, "rack_location_id": rack_pk,
-                 "op_id": f"t-{run}-fb"}, token=tok)
-    check("from-build", st == 200 and d.get("id") == build_ref
-          and d.get("rack_id") == rack_pk
-          and len(d.get("items", [])) == 2 and d.get("status") == "pending", str(d))
-
-    # stock a reel of r10k into a slot so item 0 becomes locatable
+    # pick job from build (web panel): select specific reels, fan out per rack
+    # (review item 10). Put one reel of each BOM part into the rack so they
+    # can be selected.
     si_c = new_stock(r10k, 3000)
     st, d = req("POST", f"{P}/rack/slots/{s1}/assign",
                 {"stock_item_id": si_c, "op_id": f"t-{run}-as4"}, token=rtok)
     check("assign C→slot1", st == 200, str(d))
+    si_d = new_stock(c100n, 2500)
+    st, d = req("POST", f"{P}/rack/slots/{s2}/assign",
+                {"stock_item_id": si_d, "op_id": f"t-{run}-as5"}, token=rtok)
+    check("assign D→slot2", st == 200, str(d))
+
+    # options lists the candidate reels per BOM line
+    st, d = req("GET", f"{P}/pickjobs/options?build_id={build_pk}", token=tok)
+    lines = d.get("lines", [])
+    check("options lists reels", st == 200 and len(lines) == 2
+          and any(c["stock_id"] == si_c for ln in lines for c in ln["candidates"]),
+          str(d)[:300])
+
+    # from-build: select both reels -> one job on this rack with 2 items
+    st, d = req("POST", f"{P}/pickjobs/from-build",
+                {"build_id": build_pk, "stock_ids": [si_c, si_d],
+                 "op_id": f"t-{run}-fb"}, token=tok)
+    jobs = d.get("jobs", [])
+    job0 = jobs[0] if jobs else {}
+    check("from-build", st == 200 and len(jobs) == 1
+          and job0.get("id") == build_ref and job0.get("rack_id") == rack_pk
+          and len(job0.get("items", [])) == 2 and job0.get("status") == "pending",
+          str(d))
 
     st, d = req("GET", f"{P}/pickjobs", token=rtok)
     jobs = d.get("jobs", [])
@@ -262,10 +278,10 @@ def main():
     it0 = job["items"][0] if job else {}
     check("item0 located in slot1", s1 in it0.get("located_slots", []), str(it0))
 
-    # wrong-slot pick → 409 (slot1 holds r10k; item 1 wants c100n)
-    st, d = req("POST", f"{P}/pickjobs/{build_ref}/items/1/pick",
-                {"slot_num": s1, "op_id": f"t-{run}-jp0"}, token=rtok)
-    check("job pick wrong part 409", st == 409, str(d))
+    # wrong-slot pick → 409 (item 0 is pinned to si_c in slot1; slot2 holds c100n)
+    st, d = req("POST", f"{P}/pickjobs/{build_ref}/items/0/pick",
+                {"slot_num": s2, "op_id": f"t-{run}-jp0"}, token=rtok)
+    check("job pick wrong reel 409", st == 409, str(d))
 
     # correct pick
     st, d = req("POST", f"{P}/pickjobs/{build_ref}/items/0/pick",

@@ -149,10 +149,14 @@ def main():
     if builds:
         build_pk = builds[0]["pk"]
         ref = builds[0]["reference"]
+        # Select si_b (housed in rack B) -> the job fans out to rack B only
+        # (review item 10b: jobs follow the racks holding the selected reels).
         st, d = req("POST", f"{P}/pickjobs/from-build",
-                    {"build_id": build_pk, "rack_location_id": rack_b,
+                    {"build_id": build_pk, "stock_ids": [si_b],
                      "op_id": f"mr-{run}-jobB"}, token=tok)
-        check("create job targeting rack B", st == 200 and d.get("rack_id") == rack_b, str(d)[:160])
+        jobs = d.get("jobs", [])
+        check("create job targeting rack B", st == 200 and len(jobs) == 1
+              and jobs[0].get("rack_id") == rack_b, str(d)[:200])
         a_jobs = {j["id"] for j in req("GET", f"{P}/pickjobs", token=tok_a)[1].get("jobs", [])}
         b_jobs = {j["id"] for j in req("GET", f"{P}/pickjobs", token=tok_b)[1].get("jobs", [])}
         check("job visible to rack B only", ref in b_jobs and ref not in a_jobs,

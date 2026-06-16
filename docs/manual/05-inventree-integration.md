@@ -142,9 +142,11 @@ token-bound rack identity:
   token is refused with 409** (re-provision).
 - HMIs need no rack number and no wire/protocol change — the token alone tells
   the plugin which rack it is driving.
-- Pick jobs store a target rack pk; the Build Order panel has a rack selector
-  (`POST /pickjobs/from-build` requires `rack_location_id`).
-  `GET /pickjobs?all=1` and `GET /racks` serve the web panel across all racks.
+- Pick jobs are created from selected reels: the Build Order panel lists the
+  candidate reels (`GET /pickjobs/options`), and `POST /pickjobs/from-build`
+  takes `stock_ids` and fans out **one job per rack** that holds a selected reel.
+  Each item is pinned to its `stock_id`. `GET /pickjobs?all=1` and `GET /racks`
+  serve the web panel across all racks.
 
 ## 6. The mock server
 

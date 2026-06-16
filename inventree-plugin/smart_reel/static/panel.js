@@ -83,86 +83,113 @@ export async function renderBuildPanel(target, data) {
             root.innerHTML = `<div class="sr-err">SmartReel API error: ${esc(e.message)}</div>`;
             return;
         }
-        const job = jobs.find((j) => j.build_id === buildId);
-        job ? renderJob(job) : renderEmpty();
+        // A build can now have one job per rack (review item 10b).
+        const mine = jobs.filter((j) => j.build_id === buildId);
+        mine.length ? renderJobs(mine) : renderPicker();
     }
 
-    function rackSelect() {
-        if (!racks.length) {
-            return `<p class="sr-err">No SmartReel racks configured. Provision a
-                    rack from its stock-location page first.</p>`;
+    // ---- Reel picker: choose which reels to pull, then fan out (item 10) ----
+    async function renderPicker() {
+        let lines;
+        try {
+            lines = await call("GET", `/pickjobs/options?build_id=${buildId}`)
+                .then((d) => d.lines || []);
+        } catch (e) {
+            root.innerHTML = `<div class="sr-err">SmartReel API error: ${esc(e.message)}</div>`;
+            return;
         }
-        return `<label>Rack:
-            <select id="sr-rack">
-                ${racks.map((r) =>
-                    `<option value="${r.location_id}">${esc(r.name)} (${r.n_slots} slots)</option>`
-                ).join("")}
-            </select></label>`;
-    }
+        if (!racks.length) {
+            root.innerHTML = `<p class="sr-err">No SmartReel racks configured.
+                Provision a rack from its stock-location page first.</p>`;
+            return;
+        }
 
-    async function send(extra) {
-        const sel = root.querySelector("#sr-rack");
-        const rack_location_id = sel ? Number(sel.value) : undefined;
-        await call("POST", "/pickjobs/from-build", {
-            build_id: buildId,
-            rack_location_id,
-            op_id: `panel-${buildId}-${Date.now()}`,
-            ...(extra || {}),
-        });
-        refresh();
-    }
+        const rows = lines.map((ln) => {
+            if (!ln.candidates.length) {
+                return `<tr><td></td><td>${esc(ln.part_id)}</td>
+                    <td>${esc(ln.part_name)}</td>
+                    <td colspan="2" class="sr-muted">no reel in any rack</td></tr>`;
+            }
+            // Default-check when there's exactly one candidate; force an
+            // explicit choice when a part has several reels.
+            const auto = ln.candidates.length === 1;
+            return ln.candidates.map((c, i) => `
+                <tr>
+                    <td><input type="checkbox" class="sr-pick" value="${c.stock_id}"
+                         ${auto ? "checked" : ""}></td>
+                    <td>${i === 0 ? esc(ln.part_id) : ""}</td>
+                    <td>${i === 0 ? esc(ln.part_name) : ""}</td>
+                    <td>reel #${c.stock_id} · qty ${c.qty}${c.batch ? " · " + esc(c.batch) : ""}</td>
+                    <td>${esc(c.rack_name)} slot ${c.slot_num}</td>
+                </tr>`).join("");
+        }).join("");
 
-    function renderEmpty() {
         root.innerHTML = `
-            <p>No SmartReel pick job for this build order.</p>
-            <p class="sr-muted">Sending creates one item per BOM line; the
-            chosen SmartReel rack lights up the slots holding each part and
-            reels transfer to staging as they're picked.</p>
-            ${rackSelect()}
-            <button id="sr-send" ${racks.length ? "" : "disabled"}>Send to SmartReel</button>
-            <div class="sr-err" id="sr-msg"></div>`;
-        const btn = root.querySelector("#sr-send");
-        if (btn) btn.addEventListener("click", async () => {
-            try { await send(); }
-            catch (e) { root.querySelector("#sr-msg").textContent = e.message; }
-        });
-    }
-
-    function renderJob(job) {
-        const rows = job.items.map((it) => `
-            <tr>
-                <td>${it.picked ? "✅" : "·"}</td>
-                <td>${esc(it.part_id)}</td>
-                <td>${esc(it.part_name)}</td>
-                <td>${it.qty}</td>
-                <td>${it.picked ? "" :
-                    (it.located_slots.length
-                        ? "slot " + it.located_slots.join(", ")
-                        : '<span class="sr-muted">not in rack</span>')}</td>
-            </tr>`).join("");
-        root.innerHTML = `
-            <p>Pick job <b>${esc(job.id)}</b>
-               <span class="sr-badge ${esc(job.status)}">${esc(job.status)}</span>
-               <span class="sr-muted">→ ${esc(rackName(job.rack_id))} ·
-               requested ${esc(job.requested_at)}</span></p>
+            <p>Select the reels to pick. Sending fans out
+               <b>one job per rack</b>; each rack's HMI lights only its reels.</p>
             <table>
-                <tr><th></th><th>Part</th><th>Name</th><th>Qty</th><th>Location</th></tr>
-                ${rows}
+                <tr><th></th><th>Part</th><th>Name</th><th>Reel</th><th>Rack / slot</th></tr>
+                ${rows || `<tr><td colspan="5" class="sr-muted">No BOM lines.</td></tr>`}
             </table>
-            <div style="margin-top:8px">${rackSelect()}</div>
-            <button id="sr-resend">Resend (reset progress)</button>
-            <button id="sr-remove">Remove from SmartReel</button>
+            <button id="sr-send">Send to SmartReel</button>
             <div class="sr-err" id="sr-msg"></div>`;
-        // Pre-select the rack the job currently targets.
-        const sel = root.querySelector("#sr-rack");
-        if (sel && job.rack_id) sel.value = String(job.rack_id);
-        root.querySelector("#sr-resend").addEventListener("click", async () => {
-            try { await send(); }
-            catch (e) { root.querySelector("#sr-msg").textContent = e.message; }
+
+        root.querySelector("#sr-send").addEventListener("click", async () => {
+            const ids = [...root.querySelectorAll(".sr-pick:checked")]
+                .map((el) => Number(el.value));
+            if (!ids.length) {
+                root.querySelector("#sr-msg").textContent = "Tick at least one reel to pick.";
+                return;
+            }
+            try {
+                await call("POST", "/pickjobs/from-build", {
+                    build_id: buildId,
+                    stock_ids: ids,
+                    op_id: `panel-${buildId}-${Date.now()}`,
+                });
+                refresh();
+            } catch (e) {
+                root.querySelector("#sr-msg").textContent = e.message;
+            }
         });
+    }
+
+    // ---- Existing jobs (one card per rack) ----
+    function renderJobs(jobsForBuild) {
+        const cards = jobsForBuild.map((job) => {
+            const rows = job.items.map((it) => `
+                <tr>
+                    <td>${it.picked ? "✅" : "·"}</td>
+                    <td>${esc(it.part_id)}</td>
+                    <td>${esc(it.part_name)}</td>
+                    <td>${it.picked ? "" :
+                        (it.located_slots.length
+                            ? "slot " + it.located_slots.join(", ")
+                            : '<span class="sr-muted">not in rack</span>')}</td>
+                </tr>`).join("");
+            return `
+                <p>Pick job <b>${esc(job.id)}</b>
+                   <span class="sr-badge ${esc(job.status)}">${esc(job.status)}</span>
+                   <span class="sr-muted">→ ${esc(rackName(job.rack_id))} ·
+                   requested ${esc(job.requested_at)}</span></p>
+                <table>
+                    <tr><th></th><th>Part</th><th>Name</th><th>Location</th></tr>
+                    ${rows}
+                </table>`;
+        }).join("<hr>");
+
+        root.innerHTML = `
+            ${cards}
+            <div style="margin-top:8px">
+                <button id="sr-reselect">Re-select reels (resend)</button>
+                <button id="sr-remove">Remove from SmartReel</button>
+            </div>
+            <div class="sr-err" id="sr-msg"></div>`;
+        root.querySelector("#sr-reselect").addEventListener("click", renderPicker);
         root.querySelector("#sr-remove").addEventListener("click", async () => {
             try {
-                await call("DELETE", `/pickjobs/${encodeURIComponent(job.id)}`);
+                // One DELETE clears every rack's job for this build.
+                await call("DELETE", `/pickjobs/${encodeURIComponent(jobsForBuild[0].id)}`);
                 refresh();
             } catch (e) {
                 root.querySelector("#sr-msg").textContent = e.message;

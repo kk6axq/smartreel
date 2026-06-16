@@ -34,6 +34,8 @@ logger = logging.getLogger("inventree")
 
 METADATA_KEY = "smartreel"          # on slot locations: {"slot": n}
                                     # on rack locations: {"is_rack": true, "staging", "pulled"}
+                                    # on build orders (legacy): a single pick job
+JOBS_KEY = "smartreel_jobs"         # on build orders: {str(rack_pk): job} (multi-rack)
 TOKEN_RACK_KEY = "smartreel_rack"   # on an ApiToken: the rack location pk it controls
 OP_CACHE_TTL = 600  # seconds; mirrors the mock's idempotency window
 
@@ -612,13 +614,25 @@ def resolve_barcode(rack, code: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def _job_builds():
+    """Yield (build, job) for every SmartReel pick job.
+
+    A build can now carry one job per rack under JOBS_KEY = {str(rack_pk): job}
+    (review item 10b). A pre-multi-rack single job under METADATA_KEY is still
+    honoured (migrate-on-read), so old jobs keep working.
+    """
     from build.models import Build
 
     # metadata is a JSONField; cheap python-side filter keeps this portable.
     for build in Build.objects.exclude(metadata__isnull=True):
-        job = (build.metadata or {}).get(METADATA_KEY)
-        if job:
-            yield build, job
+        meta = build.metadata or {}
+        jobs = meta.get(JOBS_KEY)
+        if jobs:
+            for job in jobs.values():
+                yield build, job
+        else:
+            legacy = meta.get(METADATA_KEY)
+            if legacy and isinstance(legacy, dict) and legacy.get("items"):
+                yield build, legacy
 
 
 def _build_by_reference(reference: str):
@@ -641,6 +655,19 @@ def _located(part_pk: int, slots: dict[int, object]) -> list[int]:
         n for n in sorted(slots)
         if (item := stock_in(slots[n])) and item.part_id == part_pk
     ]
+
+
+def _located_item(item_meta: dict, slots: dict[int, object]) -> list[int]:
+    """Slots in `slots` that can fulfil a job item. When the item is pinned to
+    a specific reel (stock_id, review item 10a) only that reel's slot lights;
+    otherwise any in-rack reel of the part does (legacy / unpinned)."""
+    stock_id = item_meta.get("stock_id")
+    if stock_id:
+        return [
+            n for n in sorted(slots)
+            if (item := stock_in(slots[n])) and item.pk == stock_id
+        ]
+    return _located(item_meta["part"], slots)
 
 
 def _job_belongs_to(job: dict, rack) -> bool:
@@ -666,7 +693,7 @@ def render_job(build, job: dict, slots: dict[int, object]) -> dict:
                 "part_name": it["part_name"],
                 "qty": it["qty"],
                 "picked": it["picked"],
-                "located_slots": [] if it["picked"] else _located(it["part"], slots),
+                "located_slots": [] if it["picked"] else _located_item(it, slots),
             }
             for i, it in enumerate(job["items"])
         ],
@@ -689,67 +716,161 @@ def all_jobs() -> list[dict]:
     return out
 
 
-def create_job_from_build(build, user, rack, destination_id: int | None = None) -> dict:
-    """Create (or replace) the SmartReel pick job for a build order, targeted
-    at `rack`. One item per build line; parts not in the rack still get an
-    item (located_slots comes back empty → HMI shows them unfulfillable).
-    """
-    if rack is None:
-        raise ConfigError("no SmartReel rack selected for this job")
+def _slot_index() -> dict[int, tuple]:
+    """{slot_location_pk: (rack, slot_num)} across every provisioned rack."""
+    index: dict[int, tuple] = {}
+    for rack in list_rack_locations():
+        for n, loc in slot_map(rack).items():
+            index[loc.pk] = (rack, n)
+    return index
 
-    if destination_id:
-        dest = _loc_by_pk(destination_id)
-        if dest is None:
-            raise LookupError(f"destination location {destination_id} not found")
-    else:
-        dest = require(staging_for(rack), "STAGING_LOCATION")
 
-    items = []
+def build_stock_options(build) -> list[dict]:
+    """For each BOM line, the in-stock reels housed in any SmartReel rack —
+    the candidate reels the operator picks from before sending (review item
+    10a). A part with no rack-housed stock shows an empty candidate list."""
+    from stock.models import StockItem
+
+    index = _slot_index()
+    loc_pks = list(index)
+    out = []
     for line in build.build_lines.all().select_related("bom_item__sub_part"):
         part = line.bom_item.sub_part
-        items.append({
+        candidates = []
+        if loc_pks:
+            for item in StockItem.objects.filter(
+                part=part, quantity__gt=0, location_id__in=loc_pks
+            ).select_related("part"):
+                rack, slot_num = index[item.location_id]
+                candidates.append({
+                    "stock_id": item.pk,
+                    "qty": int(item.quantity),
+                    "batch": item.batch or "",
+                    "rack_id": rack.pk,
+                    "rack_name": rack.pathstring or rack.name,
+                    "slot_num": slot_num,
+                })
+        candidates.sort(key=lambda c: (c["rack_name"], c["slot_num"]))
+        out.append({
             "part": part.pk,
             "part_id": part_wire_id(part),
             "part_name": part.full_name,
             "qty": int(line.quantity),
-            "picked": False,
-            "picked_stock": None,
+            "candidates": candidates,
         })
-    if not items:
-        raise ValueError("build order has no BOM lines to pick")
+    return out
 
-    job = {
-        "name": f"{build.part.name} x {int(build.quantity)}",
-        "rack": rack.pk,
-        "requested_at": timezone.now().isoformat(timespec="seconds"),
-        "requested_by": getattr(user, "username", ""),
-        "destination_id": dest.pk,
-        "items": items,
-    }
-    build.set_metadata(METADATA_KEY, job)
-    return render_job(build, job, slot_map(rack))
+
+def create_jobs_from_build(build, user, stock_ids, destination_id: int | None = None) -> list[dict]:
+    """Create one pick job per rack from the selected reels (review item 10).
+
+    `stock_ids` are the StockItem pks the operator ticked in the panel. Each is
+    grouped by the rack that physically holds it, and one job is created per
+    rack containing just those reels (each item pinned to its stock_id). Returns
+    the rendered jobs (one per rack). Replaces any existing SmartReel jobs on
+    the build.
+    """
+    from stock.models import StockItem
+
+    if not stock_ids:
+        raise ValueError("no reels selected to pick")
+
+    index = _slot_index()
+    by_rack: dict[int, tuple] = {}    # rack_pk -> (rack, [(item, slot_num)])
+    for sid in stock_ids:
+        try:
+            item = StockItem.objects.select_related("part").get(pk=sid)
+        except StockItem.DoesNotExist:
+            raise LookupError(f"stock item {sid} not found")
+        info = index.get(item.location_id)
+        if info is None:
+            raise SlotConflict(f"stock item {sid} is not in a SmartReel slot")
+        rack, slot_num = info
+        by_rack.setdefault(rack.pk, (rack, []))[1].append((item, slot_num))
+
+    jobs_meta: dict[str, dict] = {}
+    rendered: list[tuple] = []
+    for rack, items in by_rack.values():
+        if destination_id:
+            dest = _loc_by_pk(destination_id)
+            if dest is None:
+                raise LookupError(f"destination location {destination_id} not found")
+        else:
+            dest = require(staging_for(rack), "STAGING_LOCATION")
+        job_items = [
+            {
+                "part": item.part_id,
+                "part_id": part_wire_id(item.part),
+                "part_name": item.part.full_name,
+                "qty": int(item.quantity),
+                "stock_id": item.pk,
+                "picked": False,
+                "picked_stock": None,
+            }
+            for item, _slot in items
+        ]
+        job = {
+            "name": f"{build.part.name} x {int(build.quantity)}",
+            "rack": rack.pk,
+            "requested_at": timezone.now().isoformat(timespec="seconds"),
+            "requested_by": getattr(user, "username", ""),
+            "destination_id": dest.pk,
+            "items": job_items,
+        }
+        jobs_meta[str(rack.pk)] = job
+        rendered.append((rack, job))
+
+    # Replace any prior SmartReel jobs on this build (both new + legacy keys).
+    build.set_metadata(JOBS_KEY, jobs_meta)
+    meta = build.metadata or {}
+    if METADATA_KEY in meta:
+        del meta[METADATA_KEY]
+        build.metadata = meta
+        build.save()
+    return [render_job(build, j, slot_map(r)) for r, j in rendered]
 
 
 def delete_job(reference: str) -> bool:
+    """Remove all SmartReel pick jobs for a build (every rack + legacy)."""
     build = _build_by_reference(reference)
     if build is None:
         return False
     meta = build.metadata or {}
-    if METADATA_KEY not in meta:
+    if JOBS_KEY not in meta and METADATA_KEY not in meta:
         return False
-    del meta[METADATA_KEY]
+    meta.pop(JOBS_KEY, None)
+    meta.pop(METADATA_KEY, None)
     build.metadata = meta
     build.save()
     return True
 
 
+def _build_job_for_rack(build, rack):
+    """The (job, storage_key) for `rack` on `build`, or (None, None)."""
+    meta = build.metadata or {}
+    jobs = meta.get(JOBS_KEY)
+    if jobs and str(rack.pk) in jobs:
+        return jobs[str(rack.pk)], JOBS_KEY
+    legacy = meta.get(METADATA_KEY)
+    if legacy and isinstance(legacy, dict) and legacy.get("rack") == rack.pk:
+        return legacy, METADATA_KEY
+    return None, None
+
+
+def _write_build_job(build, rack, job, key) -> None:
+    if key == JOBS_KEY:
+        jobs = build.get_metadata(JOBS_KEY) or {}
+        jobs[str(rack.pk)] = job
+        build.set_metadata(JOBS_KEY, jobs)
+    else:
+        build.set_metadata(METADATA_KEY, job)
+
+
 def pick_job_item(rack, reference: str, idx: int, slot_num: int, user) -> dict:
     build = _build_by_reference(reference)
-    job = (build.metadata or {}).get(METADATA_KEY) if build else None
+    job, key = _build_job_for_rack(build, rack) if build else (None, None)
     if not job:
-        raise LookupError(f"job {reference} not found")
-    if not _job_belongs_to(job, rack):
-        raise SlotConflict(f"job {reference} is not assigned to this rack")
+        raise LookupError(f"job {reference} not found for this rack")
     if idx < 0 or idx >= len(job["items"]):
         raise LookupError(f"item idx {idx} out of bounds")
     item_meta = job["items"][idx]
@@ -768,6 +889,13 @@ def pick_job_item(rack, reference: str, idx: int, slot_num: int, user) -> dict:
             f"slot {slot_num} holds {part_wire_id(stock.part)}, "
             f"item needs {item_meta['part_id']}"
         )
+    # When the item is pinned to a specific reel, the slot must hold THAT reel
+    # (review item 10a) -- not just any reel of the part.
+    pinned = item_meta.get("stock_id")
+    if pinned and stock.pk != pinned:
+        raise SlotConflict(
+            f"slot {slot_num} holds reel {stock.pk}, item needs reel {pinned}"
+        )
 
     # Atomic: the stock move and the job's "picked" bookkeeping must commit or
     # roll back together. A crash between them would otherwise move stock while
@@ -777,7 +905,7 @@ def pick_job_item(rack, reference: str, idx: int, slot_num: int, user) -> dict:
         result = pick_slot(rack, slot_num, user, destination_id=job.get("destination_id"))
         item_meta["picked"] = True
         item_meta["picked_stock"] = result["stock_id"]
-        build.set_metadata(METADATA_KEY, job)
+        _write_build_job(build, rack, job, key)
 
     rendered = render_job(build, job, slots)
     return {

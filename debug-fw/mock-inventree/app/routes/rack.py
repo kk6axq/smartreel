@@ -52,6 +52,24 @@ def get_rack() -> RackResp:
         )
 
 
+@router.get("/occupancy")
+def get_occupancy() -> dict:
+    """Cheap occupancy fingerprint for the HMI's fast-poll change detector
+    (review item 6). Opaque hash; the HMI only compares it for equality."""
+    import hashlib
+    import json
+
+    with store.lock():
+        rows = sorted(
+            (s["slot"], s.get("stock_id"))
+            for s in store.state.slots if s.get("stock_id") is not None
+        )
+        locs = store.state.locates
+        loc_sig = [max((loc["id"] for loc in locs), default=0), len(locs)]
+    payload = json.dumps([rows, loc_sig], sort_keys=True, default=str).encode()
+    return {"rev": hashlib.sha1(payload).hexdigest()[:16]}
+
+
 @router.post("/locates/ack", response_model=LocateAckResp)
 def ack_locates(req: LocateAckReq) -> LocateAckResp:
     """Drop consumed locate requests (InvenTree locate button). Body

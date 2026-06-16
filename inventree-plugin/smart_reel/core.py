@@ -88,6 +88,7 @@ class SmartReelPlugin(
             path("api/v1/pickjobs", api.PickJobsView.as_view(), name="pickjobs"),
             path("api/v1/racks", api.RacksView.as_view(), name="racks"),
             path("api/v1/pickjobs/from-build", api.JobView.as_view(), name="job-from-build"),
+            path("api/v1/pickjobs/options", api.BuildOptionsView.as_view(), name="job-options"),
             path("api/v1/pickjobs/<str:job_id>", api.JobView.as_view(), name="job"),
             path("api/v1/pickjobs/<str:job_id>/items/<int:idx>/pick", api.JobItemPickView.as_view(), name="job-item-pick"),
             path("api/v1/parts/locate", api.LocateView.as_view(), name="locate"),
