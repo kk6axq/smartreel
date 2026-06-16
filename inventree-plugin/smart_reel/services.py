@@ -307,6 +307,34 @@ def rack_snapshot(rack) -> dict:
     }
 
 
+def occupancy_rev(rack) -> str:
+    """Cheap occupancy fingerprint for the HMI's fast-poll change detector
+    (review item 6). One query over the rack's slot stock; the HMI polls this
+    every ~5s and only runs the full GET /rack reconcile when `rev` changes,
+    so a reel moved out of a slot in InvenTree is picked up within ~10s
+    without the cost of a full snapshot each poll.
+    """
+    import hashlib
+
+    from stock.models import StockItem
+
+    slots = slot_map(rack)
+    slot_for_loc = {loc.pk: n for n, loc in slots.items()}
+    rows = []
+    if slot_for_loc:
+        for loc_id, pk, qty in StockItem.objects.filter(
+            location_id__in=list(slot_for_loc), quantity__gt=0
+        ).values_list("location_id", "pk", "quantity"):
+            rows.append((slot_for_loc[loc_id], pk, int(qty)))
+    rows.sort()
+    # Fold the pending locate queue in too, so a web-UI "locate" is also
+    # surfaced within the fast-poll window, not only at the slow reconcile.
+    locs = locate_requests(rack)
+    loc_sig = (max((e.get("id", 0) for e in locs), default=0), len(locs))
+    payload = repr((rows, loc_sig)).encode()
+    return hashlib.sha1(payload).hexdigest()[:16]
+
+
 def assign_slot(rack, slot_num: int, stock_item_id: int, user) -> dict:
     from stock.models import StockItem
 
@@ -558,6 +586,11 @@ def resolve_barcode(rack, code: str) -> dict:
             item = StockItem.objects.get(pk=_pk(match["stockitem"]))
         except StockItem.DoesNotExist:
             return {"type": "unknown", "message": "Stock item no longer exists"}
+        # render_stock reports slot_num relative to THIS rack, so the HMI can
+        # reject a reel already housed here yet accept one from a different
+        # SmartReel (review item 21). No cross-rack block is needed: a reel
+        # loaded elsewhere transfers over, and that rack notices via its fast
+        # occupancy poll (item 6).
         return {"type": "stockitem", "stock": render_stock(item, slots)}
 
     if "part" in match:

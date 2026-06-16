@@ -342,6 +342,40 @@ ResolveResult resolve_barcode(const char* code, const char* op_id) {
     return r;
 }
 
+// ---- GET /rack/occupancy --------------------------------------------
+
+OccResult get_occupancy() {
+    OccResult r{};
+    r.status = Status::NotConfigured;
+    if (wifi_mgr::status() != wifi_mgr::State::Connected) {
+        r.status = Status::NoWifi;
+        snprintf(r.error, sizeof(r.error), "wifi not connected");
+        return r;
+    }
+    if (url_error(r.error, sizeof(r.error))) return r;
+
+    char url[160];
+    if (!build_url(url, sizeof(url), "rack/occupancy")) {
+        snprintf(r.error, sizeof(r.error), "URL too long");
+        return r;
+    }
+
+    String body;
+    int code = do_request("GET", url, nullptr, body);
+    classify(code, body, r.status, r.http_code, r.error, sizeof(r.error));
+    if (r.status != Status::Ok) return r;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body) != DeserializationError::Ok) {
+        r.status = Status::ParseError;
+        snprintf(r.error, sizeof(r.error), "bad occupancy json");
+        return r;
+    }
+    snprintf(r.rev, sizeof(r.rev), "%s", doc["rev"] | "");
+    capture_success();
+    return r;
+}
+
 // ---- shared helper for the slot mutators ----------------------------
 
 static SlotMutResult slot_mut_call(const char* path, const char* body_buf) {

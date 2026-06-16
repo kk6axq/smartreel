@@ -146,8 +146,13 @@ static void on_resolve_done(void* user) {
                          r.stock.id, r.stock.qty, r.stock.slot_num, r.stock.part.id);
                 // Already housed in a rack slot? Tell the user instead
                 // of starting a duplicate load (user story 1 / contract).
+                // Already housed in a slot of THIS rack -> reject (can't load
+                // the same reel twice here). A reel in a *different* SmartReel
+                // is accepted: loading transfers it over, and that rack notices
+                // the move via its fast occupancy poll (review items 6, 21).
                 if (r.stock.slot_num > 0) {
-                    LOAD_LOG("  already in slot %d -- not loading", r.stock.slot_num);
+                    LOAD_LOG("  already in this rack slot %d -- not loading",
+                             r.stock.slot_num);
                     char msg[96];
                     snprintf(msg, sizeof(msg), "%s is already in slot %d",
                              r.stock.part.id, r.stock.slot_num);

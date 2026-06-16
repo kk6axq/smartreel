@@ -78,6 +78,7 @@ class SmartReelPlugin(
         return [
             path("api/v1/health", health, name="health"),
             path("api/v1/rack", api.RackView.as_view(), name="rack"),
+            path("api/v1/rack/occupancy", api.OccupancyView.as_view(), name="occupancy"),
             path("api/v1/rack/register", api.RegisterView.as_view(), name="register"),
             path("api/v1/rack/slots/<int:slot_num>/assign", api.AssignView.as_view(), name="assign"),
             path("api/v1/rack/slots/<int:slot_num>/pick", api.PickView.as_view(), name="pick"),

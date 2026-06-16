@@ -265,15 +265,18 @@ loses the code (next poll), so errors can flash by.
 
 ## 21. Will it accept a reel already loaded in a different SmartReel instance?
 
-Today there is **no cross-instance rejection** on the HMI. Rack identity is purely
-server-side via token binding (`rack_for_token`); each `GET /rack` is scoped to one
-rack, and physical topology is independent. A reel scanned here that InvenTree shows as
-located in another rack would not be flagged locally.
+**Desired behaviour (clarified):** reject a reel currently housed in **this** instance
+(you can't load the same reel here twice), but **accept** reels from any other SmartReel
+— loading one transfers it over.
 
-**Proposed solution:**
-- On load resolve (`on_resolve_done`, `load.cpp`), have the plugin's resolve response
-  include the stock item's current location. If it's already in a *different* SmartReel
-  rack/slot, reject the load with a clear error ("This reel is loaded in rack X, slot N —
-  remove it there first") rather than silently double-booking it.
-- Implement the check server-side in the resolve/assign endpoint (authoritative) and
-  surface the message on the load screen; the plugin already knows all rack locations.
+This already works with the existing resolve flow: `render_stock` reports `slot_num`
+relative to the *requesting* rack (token-scoped), so `on_resolve_done` (`load.cpp`)
+rejects when `slot_num > 0` (housed here) and proceeds to load otherwise (not in this
+rack, including reels in a different SmartReel). No cross-rack block is added.
+
+The companion behaviour — the *other* rack noticing its reel left when you load it here
+— falls out of item 6's fast occupancy poll: the assign moves the stock item's location
+in InvenTree, and the source rack detects the occupancy change within ~10s.
+
+**Status:** no code change needed beyond the clarifying comment; the existing this-rack
+rejection plus item 6 cover it.

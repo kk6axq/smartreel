@@ -76,6 +76,14 @@ struct ResolveResult {
     char        message[64];
 };
 
+// GET /rack/occupancy -- cheap fingerprint for the fast-poll change detector.
+struct OccResult {
+    Status status;
+    int    http_code;
+    char   error[96];
+    char   rev[24];        // opaque occupancy hash; compare for equality only
+};
+
 struct SlotMutResult {
     // Generic "we mutated a slot" result. Slot details aren't surfaced
     // up here yet because the HMI doesn't need them on every call --
@@ -198,6 +206,8 @@ SlotMutResult ack_locates  (const int* ids, int n_ids);
 
 // Caller heap-allocates `out` (see RackResult comment) and zeroes it.
 void get_rack    (RackResult& out);
+// GET /rack/occupancy: cheap occupancy fingerprint (review item 6).
+OccResult get_occupancy();
 void get_pickjobs(PickJobsResult& out);
 JobPickResult pick_job_item(const char* job_id, int item_idx,
                             int slot_num, const char* op_id);

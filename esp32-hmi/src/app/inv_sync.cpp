@@ -39,7 +39,8 @@ namespace {
 constexpr uint32_t TICK_MS            = 500;
 constexpr uint32_t HEALTH_OK_IVL_MS   = 15000;   // re-check while online
 constexpr uint32_t HEALTH_BAD_IVL_MS  = 5000;    // retry faster while down
-constexpr uint32_t RACK_IVL_MS        = 60000;   // periodic reconcile
+constexpr uint32_t RACK_IVL_MS        = 60000;   // periodic full reconcile
+constexpr uint32_t OCC_IVL_MS         = 5000;    // fast occupancy fingerprint poll
 constexpr uint32_t ONLINE_WINDOW_MS   = 45000;   // health age that still counts as online
 constexpr int      OP_MAX_ATTEMPTS    = 20;      // transient-failure retries per op
 
@@ -77,6 +78,11 @@ volatile bool g_registered = false;
 // Online tracking (written by worker, read by UI -- single word).
 volatile bool     g_online = false;
 volatile uint32_t g_last_health_ok = 0;
+
+// Last-seen occupancy fingerprint for the fast change detector (item 6).
+// Worker-task only.
+char g_occ_rev[24]  = {};
+bool g_have_occ_rev = false;
 
 bool q_push(const Op& op) {
     bool ok = false;
@@ -492,6 +498,7 @@ void set_online(bool on) {
 void worker(void*) {
     uint32_t next_health = 0;
     uint32_t next_rack   = 0;
+    uint32_t next_occ    = 0;
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(TICK_MS));
@@ -554,6 +561,26 @@ void worker(void*) {
                 } else {
                     SR_LOG("GET /rack FAILED: %s", rr->error);
                     delete rr;
+                }
+            }
+        }
+
+        // Fast occupancy poll (review item 6): a cheap fingerprint detects a
+        // reel moved out of a slot in InvenTree within ~10s without the full
+        // /rack snapshot each time. On a change, request a full reconcile
+        // (which applies it). Gated on an empty queue like the reconcile, so
+        // our own in-flight mutations don't trip a redundant pass.
+        if ((int32_t)(now - next_occ) >= 0 && !g_want_rack && pending_ops() == 0) {
+            next_occ = now + OCC_IVL_MS;
+            inv_api::OccResult o = inv_api::get_occupancy();
+            if (o.status == inv_api::Status::Ok) {
+                if (!g_have_occ_rev) {
+                    snprintf(g_occ_rev, sizeof(g_occ_rev), "%s", o.rev);
+                    g_have_occ_rev = true;
+                } else if (strcmp(g_occ_rev, o.rev) != 0) {
+                    snprintf(g_occ_rev, sizeof(g_occ_rev), "%s", o.rev);
+                    g_want_rack = true;     // occupancy changed -> reconcile now
+                    SR_LOG("occupancy changed (rev=%s) -> reconcile", o.rev);
                 }
             }
         }

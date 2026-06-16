@@ -103,6 +103,17 @@ class RackView(SmartReelAPIView):
         return Response(services.rack_snapshot(self.rack(request)))
 
 
+class OccupancyView(SmartReelAPIView):
+    """GET /rack/occupancy — cheap occupancy fingerprint (review item 6).
+
+    The HMI polls this every ~5s and only runs the full GET /rack reconcile
+    when `rev` changes, so a reel moved out of a slot in InvenTree is detected
+    within ~10s without a full snapshot per poll."""
+
+    def get(self, request):
+        return Response({"rev": services.occupancy_rev(self.rack(request))})
+
+
 class RegisterView(SmartReelAPIView):
     """POST /rack/register — idempotent slot sub-location creation."""
 
