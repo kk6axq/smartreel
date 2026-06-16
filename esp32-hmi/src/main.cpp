@@ -335,6 +335,28 @@ static void apply_slot_change(int slot_num, bool now_present) {
 
     if (expected) return;
 
+    // Reel put back into a slot flagged for an illegal removal: this is the
+    // RESOLUTION of that removal, not a new anomaly (review items 11, 12).
+    // Restore the slot to OCCUPIED (the part is still valid, so it reappears
+    // in View), clear the removal anomaly, stop the red flash, and do NOT
+    // raise an "added" warning.
+    if (now_present && slot->state == app::SlotState::ERROR && slot->part.valid) {
+        app::lock();
+        slot->state = app::SlotState::OCCUPIED;
+        app::unlock();
+        state_store::mark_slot_dirty(slot_num);
+        if (app::state().anomaly.kind == app::AnomalyKind::Removed
+            && app::state().anomaly.slot_num == slot_num) {
+            ui::anomaly_modal_resolve();          // clear anomaly + hide + badge
+        }
+        leds::light_slot(slot_num, 0, 0, 0);      // stop the red alarm flash
+        if (g_alarm_slot == slot_num) g_alarm_slot = -1;
+        beeper::ok();
+        ui::toast("Reel replaced", ui::NotifyMood::Success);
+        if (ui::current() == ui::Screen::View) ui::rebuild_current();
+        return;
+    }
+
     // Unexpected change.
     //  - INSERTION: a reel placed without a scan -> a (non-latching)
     //    "added" warning. No part is assigned yet (not inventoried).
@@ -460,11 +482,36 @@ static void presence_debounce_tick(lv_timer_t*) {
     }
 }
 
+// True if any divider that changed on (port, module) borders an OCCUPIED
+// logical slot. The divider after physical slot s separates the logical slot
+// containing s from the one containing s+1; changing it would re-shape a slot
+// that has a reel loaded across its full width (review item R7).
+static bool divider_change_hits_occupied(uint8_t port, uint8_t module,
+                                         uint32_t prev, uint32_t now) {
+    const uint32_t changed = prev ^ now;
+    for (int s = 0; s < 16; ++s) {
+        if (!((changed >> (2 * s)) & 1u)) continue;       // this divider unchanged
+        const app::Slot* a = app::slot_at_physical(port, module, s);
+        if (a && a->state == app::SlotState::OCCUPIED) return true;
+        const int pix = module * 16 + s + 1;              // physical slot to the right
+        const app::Slot* b = app::slot_at_physical(port, pix / 16, pix % 16);
+        if (b && b->state == app::SlotState::OCCUPIED) return true;
+    }
+    return false;
+}
+
 // A divider bit changed on (port, module). Post-commission this is a
 // fault (raise the divider anomaly); pre-commission it re-shapes the
 // logical rack (rebuild + refresh the UI live).
 static void handle_divider_change(uint8_t port, uint8_t module,
                                   uint32_t prev, uint32_t now) {
+    // Illegal regardless of commission state: you can't add a divider into a
+    // loaded multi-wide slot or pull one next to an occupied slot without
+    // unloading the reel first (review item R7). Refuse to re-shape; alert.
+    if (divider_change_hits_occupied(port, module, prev, now)) {
+        ui::anomaly_modal_raise(app::AnomalyKind::Divider);
+        return;
+    }
     if (config_store::cfg().rack.committed) {
         const auto& div = config_store::cfg().rack.dividers;
         for (int s = 0; s < 16; ++s) {

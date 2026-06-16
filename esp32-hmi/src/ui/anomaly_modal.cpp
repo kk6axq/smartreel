@@ -248,11 +248,17 @@ static void render_from_state() {
         lv_label_set_text(k, a.detail[i].k);
         lv_obj_set_style_text_color(k, color::text_muted(), 0);
         lv_obj_set_style_text_font(k, &lv_font_montserrat_24, 0);
+        lv_obj_set_style_min_width(k, 90, 0);   // keep key clear of the value
 
+        // Value takes the remaining width and ellipsizes instead of
+        // overlapping the key (review item R10).
         lv_obj_t* v = lv_label_create(row);
         lv_label_set_text(v, a.detail[i].v);
         lv_obj_set_style_text_color(v, color::text(), 0);
         lv_obj_set_style_text_font(v, &lv_font_montserrat_24, 0);
+        lv_obj_set_flex_grow(v, 1);
+        lv_obj_set_style_text_align(v, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_label_set_long_mode(v, LV_LABEL_LONG_DOT);
     }
 }
 

@@ -4,6 +4,7 @@
 #include "ui/theme.h"
 #include "ui/app_state.h"
 #include "ui/anomaly_modal.h"
+#include "ui/notify.h"
 #include "ui/screen_manager.h"
 #include "ui/text_entry_modal.h"
 #include "storage/sdcard.h"
@@ -82,7 +83,17 @@ static void on_leds_all_off(lv_event_t*)   { leds::clear_all(); }
 // is editable: tap the field to open the numeric entry modal.
 static int s_single_slot = 12;
 
-static void on_leds_single(lv_event_t*)     { leds::light_slot(s_single_slot, 0x25, 0x63, 0xEB); }
+// The slot number must be a present logical slot or light_slot() no-ops
+// silently (review item R16): give feedback instead of looking dead.
+static void on_leds_single(lv_event_t*) {
+    if (!app::slot_by_num(s_single_slot)) {
+        char msg[40];
+        snprintf(msg, sizeof(msg), "Slot %d not present", s_single_slot);
+        ui::toast(msg, ui::NotifyMood::Warn);
+        return;
+    }
+    leds::light_slot(s_single_slot, 0x25, 0x63, 0xEB);
+}
 static void on_leds_single_off(lv_event_t*) { leds::light_slot(s_single_slot, 0, 0, 0); }
 
 static void on_single_slot_saved(const char* v) {
@@ -239,6 +250,10 @@ void build_config_selftest(lv_obj_t* body) {
     {
         lv_obj_t* c = test_card(sc, "Single slot", "Light one slot");
         lv_obj_t* br = btn_row(c);
+        // Default to a present slot so "Light" works out of the box even when
+        // the rack doesn't number up to 12 (review item R16).
+        if (!app::slot_by_num(s_single_slot) && app::state().n_rack > 0)
+            s_single_slot = app::state().rack[0].slot;
         char buf[8]; snprintf(buf, sizeof(buf), "%d", s_single_slot);
         lv_obj_t* in = form_input(br, buf, 0, true);
         lv_obj_add_flag(in, LV_OBJ_FLAG_CLICKABLE);

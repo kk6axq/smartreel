@@ -74,13 +74,19 @@ static bool run_present(const LogicalSlot& ls) {
 void rebuild_rack() {
     State& st = state();
 
-    // Snapshot existing contents by logical number so they survive the rebuild.
-    struct Saved { int num; SlotState state; Part part; int qty; };
+    // Snapshot existing contents so they survive the rebuild. We key by
+    // logical number first, but ALSO remember the physical anchor
+    // (port,module,mslot): if a re-number changes slot numbers (e.g. a boot
+    // divider misread corrects itself), contents follow the physical position
+    // rather than being dropped (review item R6).
+    struct Saved { int num; uint8_t port, module, mslot; SlotState state; Part part; int qty; };
     static Saved   saved[MAX_LOGICAL_SLOTS];
     static LogicalRack lr;             // large-ish; keep off the stack
     int nsaved = 0;
     for (int i = 0; i < st.n_rack; ++i)
-        saved[nsaved++] = { st.rack[i].slot, st.rack[i].state, st.rack[i].part, st.rack[i].qty };
+        saved[nsaved++] = { st.rack[i].slot, st.rack[i].port, st.rack[i].module,
+                            st.rack[i].mslot, st.rack[i].state, st.rack[i].part,
+                            st.rack[i].qty };
 
     uint8_t counts[N_PORTS];
     DividerLayout div;
@@ -103,6 +109,15 @@ void rebuild_rack() {
         const bool present = run_present(ls);
         const Saved* sv = nullptr;
         for (int k = 0; k < nsaved; ++k) if (saved[k].num == ls.num) { sv = &saved[k]; break; }
+        // No same-number match (the rack re-numbered): fall back to the slot
+        // anchored at the same physical (port,module,mslot) so a placed reel
+        // isn't lost (review item R6).
+        if (!sv)
+            for (int k = 0; k < nsaved; ++k)
+                if (saved[k].port == ls.port && saved[k].module == ls.module
+                    && saved[k].mslot == ls.slot && saved[k].part.valid) {
+                    sv = &saved[k]; break;
+                }
         if (sv) {
             s.state = sv->state;
             s.part  = sv->part;
@@ -404,10 +419,10 @@ void mock_raise_anomaly(AnomalyKind k) {
         case AnomalyKind::Divider: {
             anomaly_set(a, k, AnomalyMood::Warn,
                         "Divider state changed",
-                        "A divider button changed while not in Load or Divider Maintenance mode.");
-            anomaly_kv(a, "Position", "between #28 and #29");
-            anomaly_kv(a, "Change",   "divider removed");
-            anomaly_kv(a, "Action",   "Replace divider, or enter Maintenance");
+                        "A divider changed. If a reel is loaded across this slot, "
+                        "unload it before changing the divider. Otherwise restore "
+                        "the divider or enter Divider Maintenance.");
+            anomaly_kv(a, "Action",   "Restore, or unload first");
             break;
         }
         default:
@@ -443,7 +458,7 @@ void raise_removed_anomaly(int slot_num) {
         anomaly_kv(a, "Slot", buf);
         anomaly_kv(a, "Part", s->part.valid ? s->part.name : "unknown");
     }
-    anomaly_kv(a, "Action", "Replace the reel, or unload it");
+    anomaly_kv(a, "Action", "Replace or unload");
     st.anomaly_visible = true;
     unlock();
     state_store::log_anomaly(a);

@@ -103,17 +103,14 @@ static void on_rack_view(lv_event_t*) { ui::navigate(ui::Screen::RackGrid); }
 void build_view(lv_obj_t* body) {
     lv_obj_t* sc = row_scroller(body);
 
-    // Rack overview lives under View now (review item 1). A right-aligned
-    // header button drills into the spatial dot-grid; back returns here.
+    // Rack overview lives under View now (review item 1). Full-width, bold
+    // button so it reads as the primary drill-in (review item R9); back
+    // returns here.
     {
-        lv_obj_t* hdr = lv_obj_create(sc);
-        lv_obj_remove_style_all(hdr);
-        lv_obj_set_size(hdr, LV_PCT(100), LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(hdr, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(hdr, LV_FLEX_ALIGN_END,
-                                   LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_clear_flag(hdr, LV_OBJ_FLAG_SCROLLABLE);
-        button(hdr, "Rack overview", BtnKind::Default, on_rack_view);
+        lv_obj_t* b = button(sc, "Rack overview", BtnKind::Default, on_rack_view);
+        lv_obj_set_width(b, LV_PCT(100));
+        lv_obj_t* lbl = lv_obj_get_child(b, 0);
+        if (lbl) lv_obj_set_style_text_font(lbl, &lv_font_montserrat_28, 0);
     }
 
     const bool online = inv_sync::online();
@@ -134,7 +131,7 @@ void build_view(lv_obj_t* body) {
         RowOpts ro; ro.stripe_state = s.state;
         lv_obj_t* row = row_make(sc, ro);
 
-        char tag[16]; snprintf(tag, sizeof(tag), "#%d", s.slot);
+        char tag[16]; snprintf(tag, sizeof(tag), "Slot %d", s.slot);
         row_add_slot_num(row, tag);
 
         char meta[64];

@@ -249,7 +249,7 @@ void row_add_slot_num(lv_obj_t* row, const char* text) {
     lv_label_set_text(l, text);
     lv_obj_set_style_text_color(l, color::text(), 0);
     lv_obj_set_style_text_font(l, &lv_font_montserrat_28, 0);
-    lv_obj_set_style_min_width(l, 84, 0);   // "#64" / "BO-0042" at 28pt
+    lv_obj_set_style_min_width(l, 116, 0);  // "Slot 40" / "BO-0042" at 28pt
 }
 
 void row_add_main_two_line(lv_obj_t* row, const char* primary, const char* meta) {

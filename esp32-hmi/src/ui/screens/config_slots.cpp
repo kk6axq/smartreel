@@ -94,26 +94,10 @@ void build_config_slots(lv_obj_t* body) {
         form_input(rt, tot, 0, true);
     }
 
-    // ---- Numbering ------------------------------------------------
-    {
-        lv_obj_t* fc = form_card(sc, "NUMBERING");
-
-        lv_obj_t* r = form_row(fc);
-        form_row_label(r, "Order", "Port ascending, module near to far, slot 0-15");
-        form_input(r, "Contiguous, present only", 240, true);
-
-        r = form_row(fc);
-        form_row_label(r, "Skip numbers", "Comma-separated slot numbers to omit");
-        form_input(r, "(none)", 200);
-
-        r = form_row(fc);
-        lv_obj_t* spacer = lv_obj_create(r);
-        lv_obj_remove_style_all(spacer);
-        lv_obj_set_flex_grow(spacer, 1);
-        lv_obj_set_height(spacer, 1);
-        lv_obj_clear_flag(spacer, LV_OBJ_FLAG_SCROLLABLE);
-        button(r, "Save numbering", BtnKind::Primary);
-    }
+    // The old "NUMBERING" card (Order / Skip numbers / Save numbering) was a
+    // non-functional mockup -- the fields were display-only and the Save
+    // button had no handler. Numbering is derived automatically from the live
+    // topology (SlotMap), so the card is removed (review item R15).
 }
 
 } // namespace ui::screens

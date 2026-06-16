@@ -346,6 +346,27 @@ static void build_watching_state(lv_obj_t* body) {
     lv_obj_set_style_pad_all(body, 16, 0);
     lv_obj_set_style_pad_gap(body, 14, 0);
 
+    // Big left-pointing arrow toward the physical scanner (it sits on the
+    // left of the unit, review item R2).
+    {
+        lv_obj_t* arrow_row = lv_obj_create(body);
+        lv_obj_remove_style_all(arrow_row);
+        lv_obj_set_size(arrow_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+        lv_obj_set_flex_flow(arrow_row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(arrow_row, LV_FLEX_ALIGN_CENTER,
+                                         LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_gap(arrow_row, 8, 0);
+        lv_obj_clear_flag(arrow_row, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_t* arrow = lv_label_create(arrow_row);
+        lv_label_set_text(arrow, LV_SYMBOL_LEFT);
+        lv_obj_set_style_text_font(arrow, &lv_font_montserrat_48, 0);
+        lv_obj_set_style_text_color(arrow, color::accent(), 0);
+        lv_obj_t* cap = lv_label_create(arrow_row);
+        lv_label_set_text(cap, "Scanner");
+        lv_obj_set_style_text_font(cap, &lv_font_montserrat_28, 0);
+        lv_obj_set_style_text_color(cap, color::text_muted(), 0);
+    }
+
     // Big QR placeholder box
     lv_obj_t* qr = lv_obj_create(body);
     lv_obj_remove_style_all(qr);

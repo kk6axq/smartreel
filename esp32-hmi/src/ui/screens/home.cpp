@@ -38,16 +38,15 @@ void build_home(lv_obj_t* body) {
     lv_obj_set_size(tiles_box, LV_PCT(100), LV_PCT(100));
     lv_obj_set_flex_grow(tiles_box, 1);
     lv_obj_set_layout(tiles_box, LV_LAYOUT_GRID);
-    static lv_coord_t cols[] = { LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_FR(1),
-                                 LV_GRID_TEMPLATE_LAST };
+    static lv_coord_t cols[] = { LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST };
     static lv_coord_t rows[] = { LV_GRID_FR(1), LV_GRID_FR(1), LV_GRID_TEMPLATE_LAST };
     lv_obj_set_grid_dsc_array(tiles_box, cols, rows);
     lv_obj_set_style_pad_column(tiles_box, 10, 0);
     lv_obj_set_style_pad_row(tiles_box, 10, 0);
     lv_obj_clear_flag(tiles_box, LV_OBJ_FLAG_SCROLLABLE);
 
-    auto place = [tiles_box](lv_obj_t* o, int col, int row, int span = 1) {
-        lv_obj_set_grid_cell(o, LV_GRID_ALIGN_STRETCH, col, span,
+    auto place = [tiles_box](lv_obj_t* o, int col, int row) {
+        lv_obj_set_grid_cell(o, LV_GRID_ALIGN_STRETCH, col, 1,
                                  LV_GRID_ALIGN_STRETCH, row, 1);
     };
     auto mktile = [&](const char* l, const char* s, lv_event_cb_t cb) {
@@ -56,14 +55,13 @@ void build_home(lv_obj_t* body) {
         return tile(tiles_box, to);
     };
 
-    // Sublabels stay terse: at 24pt a 3-column tile fits ~2 short words
-    // per line before wrapping eats the tile height. Rack overview is no
-    // longer a top-level tile (review item 1) -- it lives under View, whose
-    // sublabel now advertises it.
-    place(mktile("Load",     "Scan a reel",   on_load),     0, 0);
-    place(mktile("View",     "Parts & rack",  on_view),     1, 0);
-    place(mktile("Pick",     "Pick jobs",     on_pick),     2, 0);
-    place(mktile("Settings", "Setup",         on_settings), 0, 1, 3);
+    // 2x2 layout (review item R8): Load / Pick on top, View / Settings below.
+    // Rack overview is no longer a top-level tile (review item 1) -- it lives
+    // under View, whose sublabel advertises it.
+    place(mktile("Load",     "Scan a reel",  on_load),     0, 0);
+    place(mktile("Pick",     "Pick jobs",    on_pick),     1, 0);
+    place(mktile("View",     "Parts & rack", on_view),     0, 1);
+    place(mktile("Settings", "Setup",        on_settings), 1, 1);
 }
 
 // ---- Rack occupancy screen (reached from View now) ------------------

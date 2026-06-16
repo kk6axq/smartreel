@@ -10,7 +10,6 @@ static void on_network(lv_event_t*)  { ui::navigate(Screen::ConfigNetwork); }
 static void on_selftest(lv_event_t*) { ui::navigate(Screen::ConfigSelftest); }
 static void on_fwupdate(lv_event_t*) { ui::navigate(Screen::ConfigFwupdate); }
 static void on_dividers(lv_event_t*) { ui::navigate(Screen::ConfigDividers); }
-static void on_exit(lv_event_t*)     { ui::navigate(Screen::Home); }
 
 void build_configure(lv_obj_t* body) {
     lv_obj_set_layout(body, LV_LAYOUT_GRID);
@@ -28,12 +27,13 @@ void build_configure(lv_obj_t* body) {
         lv_obj_set_grid_cell(o, LV_GRID_ALIGN_STRETCH, col, 1,
                                  LV_GRID_ALIGN_STRETCH, row, 1);
     };
+    // No "Exit" tile (review item R14): the status-bar back button already
+    // returns Home.
     place(menu_item(body, "Slots",    "Chains, slot count and numbering",      on_slots),    0, 0);
     place(menu_item(body, "Network",  "Wi-Fi and Inventree server",            on_network),  1, 0);
     place(menu_item(body, "Self Test","LEDs, buttons, anomalies",              on_selftest), 2, 0);
     place(menu_item(body, "Firmware", "Check & install updates",               on_fwupdate), 0, 1);
     place(menu_item(body, "Dividers", "Add or remove dividers",                on_dividers), 1, 1);
-    place(menu_item(body, "Exit",     "Return to home screen",                 on_exit),     2, 1);
 }
 
 } // namespace ui::screens

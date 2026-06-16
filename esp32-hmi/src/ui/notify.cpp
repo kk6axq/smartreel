@@ -175,8 +175,11 @@ void notify_init() {
     g_toast_lbl = lv_label_create(g_toast_box);
     lv_obj_set_style_text_font(g_toast_lbl, &lv_font_montserrat_28, 0);
     lv_obj_set_style_text_color(g_toast_lbl, color::text(), 0);
-    lv_label_set_long_mode(g_toast_lbl, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(g_toast_lbl, LV_PCT(100));
+    // Let the label size to its text. Sizing it LV_PCT(100) inside a
+    // content-sized box collapses it to ~0 width, so the box renders as an
+    // empty rounded rectangle (review items 1/4). The box max_width caps long
+    // strings; toasts are short one-liners.
+    lv_obj_set_width(g_toast_lbl, LV_SIZE_CONTENT);
 
     // ---- Confirm ----
     g_cf_backdrop = make_backdrop(cf_on_backdrop);
