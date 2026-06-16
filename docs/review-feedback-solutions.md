@@ -280,3 +280,187 @@ in InvenTree, and the source rack detects the occupancy change within ~10s.
 
 **Status:** no code change needed beyond the clarifying comment; the existing this-rack
 rejection plus item 6 cover it.
+
+---
+
+# Round 2 — post-implementation review (2026-06-16)
+
+Feedback after running the Round 1 build on hardware. Several items are regressions
+in the Round 1 changes. Each heading is one issue; the proposal references the real
+code path.
+
+## R1. Pick "Refresh" shows a weird empty rounded rectangle (and R4: same after a load)
+
+The new toast (`notify.cpp`) renders as an empty rounded box because the label is sized
+`LV_PCT(100)` inside a `LV_SIZE_CONTENT` box — percent-of-content resolves to ~0 width,
+so the text is invisible and only the bordered rectangle shows. Same root cause for the
+post-load "Loaded to slot #N" toast (R4).
+
+**Proposed solution:**
+- In `notify_init()`, stop forcing the toast label to `LV_PCT(100)`. Let the label
+  size to its text (`LV_SIZE_CONTENT`) and cap the *box* width (`max_width`), so the
+  box hugs the text. Only switch the label to a fixed width + wrap when the text
+  actually exceeds the cap.
+- Verify the toast shows its text on both the pick-refresh and load paths; consider a
+  small leading icon (ℹ/✓) so it reads as a notification, not a stray rectangle.
+
+## R2. Scan-reel screen: add a big left-pointing arrow toward the scanner
+
+The scanner is physically on the **left** of the unit; the watching view (`load.cpp`
+`build_watching_state`) gives no directional cue.
+
+**Proposed solution:**
+- Add a large left-pointing arrow (`LV_SYMBOL_LEFT` at a big font, or a drawn
+  triangle) beside the "Scan reel barcode" prompt, pointing at the scanner. Keep it
+  only on the watching view, not the placed view.
+
+## R3. Settings screen tears the display (low priority)
+
+Noted as low priority. Tearing means rendering work is hitting `PRO_CPU` (the RGB LCD
+DMA), per the CPU-pinning rule. The Settings grid build is heavier than other screens.
+
+**Proposed solution (deferred):**
+- Profile what runs on `PRO_CPU` while Settings builds; ensure no blocking/allocation
+  happens off `APP_CPU`. Likely the large menu-grid build or a synchronous read.
+  Tracked but not prioritized.
+
+## R5. Rack overview collapses a whole port into one giant slot until a divider is toggled
+
+`effective_topology()` (`app_state.cpp`) derives dividers from the live input bits when
+the rack isn't commissioned: **absent bit ⇒ divider pulled**. At boot the divider bits
+read all-absent (the Core hasn't latched them, or they aren't valid yet), so every
+slot in a port combines into one. The first real divider event refreshes the bits and
+`rebuild_rack()` then shows reality.
+
+**Proposed solution:**
+- Root cause: make `hw_mirror::sync_from_core()` get a *valid* divider reading at boot
+  — re-read `read_inputs` after a short settle, or have the Core latch divider state
+  before the HMI reads. Until a confirmed reading, **default dividers to PRESENT**
+  (standard 1-wide slots) instead of pulled, so a port never collapses into one slot.
+- Safer still: only derive numbering from live bits pre-commission; once commissioned,
+  use the committed layout (already supported) so a flaky boot read can't reshape it.
+
+## R6. Going back from Rack overview shows an empty rack despite a just-placed part
+
+Linked to R5. `rebuild_rack()` preserves slot contents **by logical number**. When the
+divider state corrects itself (R5), the logical numbering changes (giant slot → real
+slots), so the placed part's old number no longer matches any new slot and its contents
+are dropped — the rack looks empty.
+
+**Proposed solution:**
+- Fix R5 so numbering is correct from boot (removes the re-number entirely).
+- Defensively, remap preserved contents by **physical anchor** (`port, module, mslot`)
+  rather than logical number in `rebuild_rack()`, so contents survive a re-numbering.
+
+## R7. Divider edits on an occupied (multi-wide) slot must be illegal
+
+Adding a divider *into* a multi-wide slot, or removing a divider *adjacent to* an
+occupied slot, changes the slot's width while a reel is loaded across that full width —
+it can't be re-shaped without unloading first. Today `handle_divider_change`
+(`main.cpp`) only checks the committed layout for mismatch; it doesn't guard occupancy.
+
+**Proposed solution:**
+- In `handle_divider_change` (committed path) and the pre-commission rebuild, before
+  applying a divider change, check whether the spanned/adjacent logical slot is
+  `OCCUPIED` (part valid). If so, reject the change: raise an anomaly ("unload the reel
+  in slot #N before changing this divider") and do **not** re-shape the rack. Restore
+  the expected divider state in the UI.
+
+## R8. Home page should be a 2×2 grid (Load/Pick top, View/Settings bottom)
+
+Round 1 left Home as three tiles + a full-width Settings. The requested layout is 2×2.
+
+**Proposed solution:**
+- In `build_home` (`home.cpp`), switch to a 2-col × 2-row grid:
+  `Load (0,0)  Pick (1,0)  /  View (0,1)  Settings (1,1)`.
+
+## R9. "Rack overview" button on the View screen should be full-width and bold
+
+Round 1 added a small right-aligned button (`view.cpp`).
+
+**Proposed solution:**
+- Make the Rack-overview button span the full row width (`LV_PCT(100)`) and use a
+  bold/large label so it reads as the primary drill-in.
+
+## R10. "Reel removed" modal: the Action detail line overlaps
+
+The anomaly modal detail rows (`anomaly_modal.cpp` `render_from_state`) are flex rows
+with the key left and value right (`SPACE_BETWEEN`). A long value like
+"Replace the reel, or unload it" collides with the key.
+
+**Proposed solution:**
+- Give the value label `flex_grow` with right align + `LV_LABEL_LONG_DOT` (ellipsis),
+  or wrap it onto its own line, so it can't overlap the key. Also shorten the Action
+  text (e.g. "Replace or unload"). Apply to all detail rows, not just this one.
+
+## R11. Replacing an illegally-removed reel wrongly raises a warning (with overlapping text)
+
+After an illegal removal (red "removed" modal), re-inserting the reel hits the
+"unexpected insertion" branch in `apply_slot_change` (`main.cpp`), which raises the
+"Added" warning. It shouldn't — putting the reel back is the *resolution* of the
+removal, not a new anomaly. The warning modal's detail lines also overlap (same layout
+bug as R10).
+
+**Proposed solution:**
+- In `apply_slot_change`, when a reel is inserted into a slot currently in `ERROR`
+  (illegally-removed) state, treat it as "reel replaced": restore the slot to
+  `OCCUPIED` (the part is still valid), clear the removal anomaly, stop the red flash,
+  and do **not** raise an "Added" warning.
+- Fix the detail-row overlap via R10.
+
+## R12. Replacing an illegally-removed reel drops it from the View screen
+
+The illegal-removal path sets the slot to `ERROR` but keeps `part.valid`. `build_view`
+only lists `OCCUPIED && part.valid` slots, so an `ERROR` (or `WARN`) slot with a valid
+part vanishes from View. R11's fix (restore to `OCCUPIED` on replace) makes it reappear.
+
+**Proposed solution:**
+- Primary: R11's "reel replaced → OCCUPIED" restore brings it back into View.
+- Optionally also surface `ERROR`/`WARN` slots in View (with a state chip) so a reel
+  mid-anomaly is never invisible.
+
+## R13. View rows: add column headers or label the slot as "Slot 40"
+
+`row_add_slot_num` shows "#40", which reads as a count/ID, not a slot.
+
+**Proposed solution:**
+- Change the View row tag from "#40" to "Slot 40" (or add a header row:
+  Slot / Part / Qty). Simplest is the "Slot N" relabel in `build_view`'s tag.
+
+## R14. Remove the "Exit" button from the Settings menu
+
+`build_configure` (`configure.cpp`) has an Exit tile; the status-bar back button
+already returns Home, so it's redundant.
+
+**Proposed solution:**
+- Drop the Exit menu item (and `on_exit`). Re-flow the menu grid (5 items) — e.g.
+  Slots/Network/Self Test on row 0, Firmware/Dividers on row 1.
+
+## R15. Purpose of the Slot-config "Numbering" section + "Save numbering" button
+
+These are **non-functional mockup leftovers**. In `config_slots.cpp` the "Order" and
+"Skip numbers" fields are `form_input(...)` — display-only labels that take no input —
+and the "Save numbering" button is created with **no callback**. Numbering is now
+derived automatically from the live topology (`SlotMap`), so the section does nothing.
+The "Rack identity" Rack-name / location inputs are the same display-only mockups.
+
+**Proposed solution:**
+- Remove the NUMBERING card (and the non-functional RACK IDENTITY inputs), or, if a
+  skip-list is genuinely wanted, implement it: persist a skip set in `config_store`,
+  apply it in the numbering engine, and wire the Save button. Recommend removing the
+  dead UI for now.
+
+## R16. Self Test "Single slot" → Light button does nothing
+
+`on_leds_single` calls `leds::light_slot(s_single_slot, ...)`, which resolves
+`slot_by_num(s_single_slot)`; if that number isn't a present logical slot it returns
+`BufferTooSmall` and nothing lights — silently. The default `s_single_slot = 12` won't
+exist while the rack is mis-combined (R5: a port collapsed into a few giant slots
+numbered 1, 17, …), so "Light" no-ops.
+
+**Proposed solution:**
+- Validate the slot before lighting: if `slot_by_num` is null, show feedback ("slot N
+  not present") instead of failing silently, and default `s_single_slot` to the first
+  present logical slot. Fixing R5 also restores the normal 1..N numbering so 12 is
+  valid again.
+
