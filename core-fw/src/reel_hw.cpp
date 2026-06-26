@@ -204,6 +204,30 @@ static void reset_modules_from(uint8_t p, uint8_t from) {
     }
 }
 
+// Seed a port's input state from an immediate raw scan, bypassing the
+// debounce ramp. The debounced sampler commits a module word only once a
+// candidate has been stable for INPUT_DEBOUNCE_SAMPLES *and* differs from the
+// committed value -- which starts at zero. So between "modules detected" and
+// the first debounce commit, READ_INPUTS reports all-zero, and the HMI can't
+// tell that from a legitimately empty, divider-less module. Priming the moment
+// modules appear makes the reported state reflect physical reality at boot
+// (review item R5). Called when a port's module count rises (boot or insert).
+static void prime_inputs(uint8_t p) {
+    const uint8_t mc = s_port[p].module_count;
+    if (mc == 0) return;
+    uint8_t max_modules = 0;
+    for (uint8_t q = 0; q < N_PORTS; ++q)
+        if (s_port[q].module_count > max_modules) max_modules = s_port[q].module_count;
+    uint32_t raw[N_PORTS][MAX_MODULES_PER_PORT];
+    read_chains_raw(raw, max_modules);          // shared chain: reads all ports
+    for (uint8_t m = 0; m < mc; ++m) {
+        s_in_committed[p][m] = raw[p][m];
+        s_in_cand[p][m]      = raw[p][m];
+        s_in_n[p][m]         = cfg::INPUT_DEBOUNCE_SAMPLES;   // already settled
+        s_port[p].inputs[m]  = raw[p][m];
+    }
+}
+
 void sample_sense() {
     const uint8_t p = s_sense_ch;
     s_sense_ch = (s_sense_ch + 1) % N_PORTS;
@@ -226,6 +250,10 @@ void sample_sense() {
         const uint8_t now  = s_count_cand[p];
         s_port[p].module_count = now;
         if (now < prev) reset_modules_from(p, now);   // dropped modules
+        // Modules appeared (boot or hot-insert): seed their input state from a
+        // real scan now so READ_INPUTS is correct immediately, not after the
+        // debounce ramp (review item R5).
+        if (now > prev) prime_inputs(p);
         if (s_count_cb) s_count_cb(p, prev, now, s_port[p].sense_mv);
     }
 }

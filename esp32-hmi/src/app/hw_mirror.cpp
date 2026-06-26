@@ -4,7 +4,6 @@
 #include "app/hw_mirror.h"
 #include "rs485/rs485.h"
 
-#include <Arduino.h>
 #include <string.h>
 
 namespace hw_mirror {
@@ -66,28 +65,19 @@ bool sync_from_core() {
         if (ri[i].port < N_PORTS) counts[ri[i].port] = ri[i].module_count;
     for (int p = 0; p < N_PORTS; ++p) set_module_count(p, counts[p]);
 
-    // Per-module input words via a blocking read of each present port.
-    //
-    // At boot the Core may not have scanned its 74HC165 chains yet, so the
-    // first read can come back all-zero -- which the rack engine reads as
-    // "every divider pulled" and collapses a whole port into one giant slot
-    // (review item R5). A populated port reading all-zero is implausible (an
-    // assembled rack has divider bits set), so treat it as "not scanned yet"
-    // and retry a few times before accepting it.
+    // Per-module input words via a blocking read of each present port. The
+    // Core primes a port's input state from a real scan the moment its
+    // modules are detected (reel_hw prime_inputs), so READ_INPUTS reflects
+    // the true latched state at boot rather than a pre-debounce zero -- an
+    // all-zero word here is a genuinely empty, divider-less module, not a
+    // not-yet-scanned one (review item R5).
     for (int p = 0; p < N_PORTS; ++p) {
         if (s_module_count[p] == 0) continue;
         uint32_t words[MAX_MODULES] = { 0 };
         int nmods = 0;
-        for (int attempt = 0; attempt < 5; ++attempt) {
-            if (rs485::read_inputs((uint8_t)p, words, MAX_MODULES, &nmods) != rs485::Status::Ok)
-                break;
-            bool any = false;
-            for (int m = 0; m < nmods && m < MAX_MODULES; ++m)
-                if (words[m]) { any = true; break; }
-            if (any) break;          // got a real reading
-            delay(40);               // let the Core latch its inputs, then retry
+        if (rs485::read_inputs((uint8_t)p, words, MAX_MODULES, &nmods) == rs485::Status::Ok) {
+            for (int m = 0; m < nmods && m < MAX_MODULES; ++m) s_inputs[p][m] = words[m];
         }
-        for (int m = 0; m < nmods && m < MAX_MODULES; ++m) s_inputs[p][m] = words[m];
     }
     s_valid = true;
     return true;
