@@ -27,6 +27,7 @@
 
 #include "board/board_pins.h"
 #include "board/ch422g.h"
+#include "board/i2c_bus.h"
 #include "display/display.h"
 #include "touch/gt911.h"
 #include "storage/sdcard.h"
@@ -117,10 +118,11 @@ static void handle_console_line(const char* line) {
         return;
     }
     if (!strcmp(line, "scan")) {
-        // Live re-probe (init() re-ACKs 0x0C and refreshes the cached flag, so
-        // this catches a scanner that fell off the bus after boot), then one
-        // read so you can tell "gone" from "present but not seeing a code".
-        if (!qr_scanner::init()) {
+        // The scanner worker re-probes 0x0C every ~200 ms, so present() is
+        // live (<=200 ms stale) and reading it here needs no cross-thread
+        // I2C. Lets you tell "gone" (no ACK) from "present but seeing no
+        // code". Both reads are off the bus -- the worker owns I2C.
+        if (!qr_scanner::present()) {
             Serial.println("[scan] NOT present on I2C 0x0C (no ACK) -- check wiring/power");
             return;
         }
@@ -128,7 +130,7 @@ static void handle_console_line(const char* line) {
         if (qr_scanner::poll(b, sizeof(b)))
             Serial.printf("[scan] present; code in view: '%s'\n", b);
         else
-            Serial.println("[scan] present (ACK ok); no decodable code in view this read");
+            Serial.println("[scan] present (ACK ok); no decodable code in view");
         return;
     }
     if (!strcmp(line, "fwinfo")) {
@@ -706,8 +708,11 @@ void setup() {
                   fw::running_partition_label());
     Serial.println("[boot] serial console: type 'help' for commands ('dl' = enter UART download mode)");
 
-    // 1) I2C bus
+    // 1) I2C bus + the lock that serialises its three users (touch, the
+    //    CH422G expander, and the scanner worker) now that they're no
+    //    longer all on one thread.
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN, I2C_FREQ_HZ);
+    i2c_bus::init();
 
     // 2) Expander
     if (!ch422g::init()) {

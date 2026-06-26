@@ -1,6 +1,7 @@
 #include "touch/gt911.h"
 #include "board/board_pins.h"
 #include "board/ch422g.h"
+#include "board/i2c_bus.h"
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -16,7 +17,11 @@ static constexpr uint16_t REG_POINT1      = 0x8150;
 static uint8_t           s_addr = 0;
 static lv_indev_drv_t    s_indev_drv;
 
+// Each helper holds the shared bus for the whole transaction. i2c_read's
+// repeated-START (endTransmission(false) -> requestFrom) must not be split
+// by the scanner worker's traffic, so the lock spans the entire sequence.
 static bool i2c_read(uint16_t reg, uint8_t* buf, size_t len) {
+    i2c_bus::Lock _g;
     Wire.beginTransmission(s_addr);
     Wire.write(uint8_t(reg >> 8));
     Wire.write(uint8_t(reg & 0xFF));
@@ -28,6 +33,7 @@ static bool i2c_read(uint16_t reg, uint8_t* buf, size_t len) {
 }
 
 static bool i2c_write(uint16_t reg, uint8_t val) {
+    i2c_bus::Lock _g;
     Wire.beginTransmission(s_addr);
     Wire.write(uint8_t(reg >> 8));
     Wire.write(uint8_t(reg & 0xFF));
@@ -36,6 +42,7 @@ static bool i2c_write(uint16_t reg, uint8_t val) {
 }
 
 static bool probe(uint8_t addr) {
+    i2c_bus::Lock _g;
     Wire.beginTransmission(addr);
     return Wire.endTransmission() == 0;
 }

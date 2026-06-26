@@ -1,5 +1,6 @@
 #include "board/ch422g.h"
 #include "board/board_pins.h"
+#include "board/i2c_bus.h"
 
 #include <Wire.h>
 #include <esp32-hal-log.h>
@@ -19,6 +20,7 @@ static constexpr uint8_t REG_OUTPUT_ENABLE = 0x24;
 static constexpr uint8_t REG_IO_PORT       = 0x38;
 
 static bool write_raw(uint8_t addr7, uint8_t data) {
+    i2c_bus::Lock _g;             // shares the Wire bus with touch + scanner
     Wire.beginTransmission(addr7);
     Wire.write(data);
     return Wire.endTransmission() == 0;
