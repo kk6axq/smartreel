@@ -178,7 +178,7 @@
     #define LV_LABEL_TEXT_SELECTION 0   // we never select label text
     #define LV_LABEL_LONG_TXT_HINT  0
 #endif
-#define LV_USE_LINE       0
+#define LV_USE_LINE       1
 #define LV_USE_ROLLER     0
 #define LV_USE_SLIDER     0
 #define LV_USE_SWITCH     0

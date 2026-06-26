@@ -116,6 +116,21 @@ static void handle_console_line(const char* line) {
         Serial.printf("[rs485] ping -> %s\n", rs485::status_str(st));
         return;
     }
+    if (!strcmp(line, "scan")) {
+        // Live re-probe (init() re-ACKs 0x0C and refreshes the cached flag, so
+        // this catches a scanner that fell off the bus after boot), then one
+        // read so you can tell "gone" from "present but not seeing a code".
+        if (!qr_scanner::init()) {
+            Serial.println("[scan] NOT present on I2C 0x0C (no ACK) -- check wiring/power");
+            return;
+        }
+        char b[256];
+        if (qr_scanner::poll(b, sizeof(b)))
+            Serial.printf("[scan] present; code in view: '%s'\n", b);
+        else
+            Serial.println("[scan] present (ACK ok); no decodable code in view this read");
+        return;
+    }
     if (!strcmp(line, "fwinfo")) {
         Serial.printf("[fw] HMI v%s  built %s  partition=%s  (git %s)\n",
                       fw::version_str(), fw::build_str(),
@@ -167,6 +182,7 @@ static void handle_console_line(const char* line) {
         Serial.println("  reboot | reset               normal reboot");
         Serial.println("  stats                        RS485 frame counters");
         Serial.println("  ping                         one-shot RS485 ping to Core");
+        Serial.println("  scan                         re-probe QR scanner (0x0C) + one read");
         Serial.println("  fwinfo                       running partition + app version");
         Serial.println("  fwupdate hmi <file>          self-OTA from /sdcard/<file>");
         Serial.println("  fwupdate core <file>         push <file> to RP2040 over RS485");

@@ -346,25 +346,35 @@ static void build_watching_state(lv_obj_t* body) {
     lv_obj_set_style_pad_all(body, 16, 0);
     lv_obj_set_style_pad_gap(body, 14, 0);
 
-    // Big left-pointing arrow toward the physical scanner (it sits on the
-    // left of the unit, review item R2).
+    // Big left-pointing "<-" arrow toward the physical scanner (it sits on the
+    // left of the unit, review item R2). Drawn from line primitives rather than
+    // a font glyph so it can be made arbitrarily large with a true arrow shape.
+    // Anchored to the left edge, centred vertically, and excluded from the
+    // body's flex layout so it overlays independently of the scan prompt.
     {
-        lv_obj_t* arrow_row = lv_obj_create(body);
-        lv_obj_remove_style_all(arrow_row);
-        lv_obj_set_size(arrow_row, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_flex_flow(arrow_row, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(arrow_row, LV_FLEX_ALIGN_CENTER,
-                                         LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        lv_obj_set_style_pad_gap(arrow_row, 8, 0);
-        lv_obj_clear_flag(arrow_row, LV_OBJ_FLAG_SCROLLABLE);
-        lv_obj_t* arrow = lv_label_create(arrow_row);
-        lv_label_set_text(arrow, LV_SYMBOL_LEFT);
-        lv_obj_set_style_text_font(arrow, &lv_font_montserrat_48, 0);
-        lv_obj_set_style_text_color(arrow, color::accent(), 0);
-        lv_obj_t* cap = lv_label_create(arrow_row);
-        lv_label_set_text(cap, "Scanner");
-        lv_obj_set_style_text_font(cap, &lv_font_montserrat_28, 0);
-        lv_obj_set_style_text_color(cap, color::text_muted(), 0);
+        // LVGL keeps the point array by pointer (it doesn't copy), so these
+        // must outlive the widget -- hence static. Container is 180x180; the
+        // arrow is scaled to ~70% length (about the left tip + vertical centre)
+        // so its shaft no longer reaches the centred scan text.
+        static const lv_point_t head_pts[]  = { {76, 37}, {12, 90}, {76, 143} };
+        static const lv_point_t shaft_pts[] = { {12, 90}, {166, 90} };
+
+        lv_obj_t* arrow = lv_obj_create(body);
+        lv_obj_remove_style_all(arrow);
+        lv_obj_set_size(arrow, 180, 180);
+        lv_obj_clear_flag(arrow, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_add_flag(arrow, LV_OBJ_FLAG_IGNORE_LAYOUT);
+        lv_obj_align(arrow, LV_ALIGN_LEFT_MID, 0, 0);
+
+        auto add_stroke = [&](const lv_point_t* pts, uint16_t n) {
+            lv_obj_t* line = lv_line_create(arrow);
+            lv_line_set_points(line, pts, n);
+            lv_obj_set_style_line_width(line, 18, 0);
+            lv_obj_set_style_line_color(line, color::accent(), 0);
+            lv_obj_set_style_line_rounded(line, true, 0);
+        };
+        add_stroke(head_pts, 3);   // the "<" arrowhead
+        add_stroke(shaft_pts, 2);  // the "-" shaft
     }
 
     // Big QR placeholder box
