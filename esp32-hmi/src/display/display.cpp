@@ -10,6 +10,7 @@
 
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <freertos/task.h>
 
 #include <string.h>
 
@@ -71,17 +72,31 @@ static bool IRAM_ATTR on_vsync(esp_lcd_panel_handle_t /*panel*/,
 // Copy one rectangular region from src FB to dst FB. Both FBs are
 // LCD_H_RES wide; the rect coordinates are in pixels. Each row is
 // memcpy'd directly out of PSRAM into PSRAM.
-static inline void copy_rect(void* dst, const void* src, const lv_area_t& a) {
+//
+// A.3 (deferred review item R3): this copy reads the just-swapped FRONT
+// buffer while the LCD DMA is simultaneously scanning that same buffer
+// out of PSRAM. A full-screen blit (~768 KB on a page change) spikes
+// PSRAM-bus demand for several milliseconds and starves the LCD bounce
+// buffer -> a visible horizontal tear. So for tall rects we split the
+// blit into row-bands and yield briefly between them, letting the DMA
+// refill the bounce buffer in the gaps. Small dirty rects (the common
+// case: a status label, a button press) stay under the threshold and
+// copy in one shot, so periodic updates remain cheap.
+static constexpr int COPY_BAND_ROWS = 48;
+static void copy_rect(void* dst, const void* src, const lv_area_t& a) {
     const int x      = a.x1;
     const int width  = (a.x2 - a.x1 + 1);
     const int rows   = (a.y2 - a.y1 + 1);
     const size_t row_bytes = (size_t)width * sizeof(lv_color_t);
+    const bool chunked = rows > COPY_BAND_ROWS;
     for (int y = 0; y < rows; ++y) {
         const lv_color_t* s = static_cast<const lv_color_t*>(src) +
                               (a.y1 + y) * LCD_H_RES + x;
         lv_color_t*       d = static_cast<lv_color_t*>(dst) +
                               (a.y1 + y) * LCD_H_RES + x;
         memcpy(d, s, row_bytes);
+        if (chunked && (y % COPY_BAND_ROWS) == (COPY_BAND_ROWS - 1))
+            vTaskDelay(1);    // ~1 ms: let the LCD DMA refill its bounce buffer
     }
 }
 
@@ -144,7 +159,14 @@ bool init() {
     panel_cfg.data_width             = 16;
     panel_cfg.bits_per_pixel         = 16;
     panel_cfg.num_fbs                = 2;
-    panel_cfg.bounce_buffer_size_px  = LCD_H_RES * 10;
+    // A.1 (deferred review item R3): the LCD DMA stages scanlines through
+    // this bounce buffer out of the PSRAM framebuffer. A larger bounce
+    // buffer tolerates longer PSRAM-bus stalls -- e.g. while flush_cb's
+    // dirty-rect copy is contending for PSRAM bandwidth -- before it
+    // underflows into a visible tear. 20 scanlines (was 10) ~= 64 KB of
+    // internal DMA RAM total across the two buffers; raise further if
+    // tearing persists and internal RAM allows.
+    panel_cfg.bounce_buffer_size_px  = LCD_H_RES * 20;
 
     panel_cfg.hsync_gpio_num = LCD_PIN_HSYNC;
     panel_cfg.vsync_gpio_num = LCD_PIN_VSYNC;
