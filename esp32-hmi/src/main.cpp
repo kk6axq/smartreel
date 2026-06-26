@@ -795,8 +795,14 @@ void setup() {
         Serial.println("[boot] no reel topology yet (Core absent?)");
 
     // Boot LED self-test: chase one pixel down each connected reel
-    // module, then all off (no-ops if no Core/modules present).
+    // module, then all off (no-ops if no Core/modules present). Runs
+    // synchronously before the async LED worker exists.
     leds::boot_chase();
+
+    // Start the async LED worker so all later light_*/clear calls (alarm
+    // flash, slot-change handlers, pick/load) push over RS485 off the LVGL
+    // thread instead of blocking the render loop (review item B).
+    leds::start();
 
     app::rebuild_rack();
     bool state_loaded = state_store::load();

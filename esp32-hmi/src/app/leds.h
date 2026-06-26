@@ -18,6 +18,12 @@
 
 namespace leds {
 
+// Start the async LED worker (APP_CPU). Call once at boot, after the reel
+// topology is known and boot_chase() has finished. Until it runs, the
+// light_*/fill/clear calls below are harmless no-ops. The actual RS485
+// push happens on this worker, never on the caller's (LVGL) thread.
+void start();
+
 // Light one slot. Sends a single-pixel set + commit for that reel.
 rs485::Status light_slot(int slot_num, uint8_t r, uint8_t g, uint8_t b);
 
