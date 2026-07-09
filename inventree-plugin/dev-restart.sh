@@ -3,8 +3,10 @@
 # wait for the API to come back, and confirm the SmartReel plugin mounted.
 set -euo pipefail
 
-COMPOSE_DIR=~/Desktop/Projects/inventree
-BASE=http://inventree.localhost
+# Path to your local InvenTree docker-compose checkout. Override for your setup:
+#   INVENTREE_COMPOSE_DIR=/path/to/inventree ./dev-restart.sh
+COMPOSE_DIR="${INVENTREE_COMPOSE_DIR:-$HOME/inventree}"
+BASE="${INVENTREE_BASE:-http://inventree.localhost}"
 
 cd "$COMPOSE_DIR"
 docker compose restart inventree-server inventree-worker >/dev/null

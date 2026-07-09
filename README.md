@@ -12,6 +12,29 @@ records *where* each reel physically lives and lights slots to guide pick and
 put-away. The operator scans a reel, the rack lights up, and the inventory
 updates itself.
 
+## Project status & disclaimer
+
+This project was developed with substantial AI assistance (using large language
+models as a coding and documentation aid). The hardware, firmware, and plugin
+have been built and run on real SmartReel hardware, and the core workflows have
+been exercised on the bench and in use — but this is **not infallible software**.
+It has not been through formal verification or a third-party audit, it almost
+certainly contains bugs, and both the code and the docs may be incomplete or
+occasionally wrong.
+
+Treat it as a working reference design, not a turnkey product:
+
+- Review the code yourself before relying on it, and read
+  [`docs/known-bugs.md`](docs/known-bugs.md) for known limitations.
+- **Security:** the HMI currently talks to InvenTree over HTTPS *without*
+  certificate verification (`setInsecure()`), so the auth token is exposed to
+  on-path attackers. Do not deploy on an untrusted network until certificate
+  pinning is in place — see [`docs/known-bugs.md`](docs/known-bugs.md).
+- It is provided as-is, with no warranty. You are responsible for validating it
+  for your own use, especially anything safety- or inventory-critical.
+
+Issues and pull requests that fix bugs or fill gaps are welcome.
+
 ## Repository layout
 
 ```
@@ -70,3 +93,11 @@ for installation, configuration, and the docker dev workflow.
 **Mock server** — for HMI development without a live InvenTree, the FastAPI mock
 at [`debug-fw/mock-inventree/`](debug-fw/mock-inventree/) serves the same HTTPS
 contract as the plugin. See its [README](debug-fw/mock-inventree/README.md).
+
+## Tests
+
+Host-runnable tests (no hardware or InvenTree install needed) live under
+[`tests/`](tests/README.md): the shared RS485 frame codec (`cd tests && make`)
+and the plugin's pure service logic (`cd inventree-plugin && python3
+test_services.py`). The full contract is exercised against a live InvenTree by
+`inventree-plugin/test_live.py` and `test_multirack.py`.

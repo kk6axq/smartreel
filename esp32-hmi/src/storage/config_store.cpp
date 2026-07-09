@@ -34,9 +34,9 @@ void load_defaults(Config& c) {
     copy_str(c.wifi.password, sizeof(c.wifi.password), "");
     c.wifi.enabled = false;
 
-    copy_str(c.inventree.url,   sizeof(c.inventree.url),   "https://inv.lab.local");
+    copy_str(c.inventree.url,   sizeof(c.inventree.url),   "https://inventree.local");
     copy_str(c.inventree.token, sizeof(c.inventree.token), "");
-    c.inventree.location_id = 42;
+    c.inventree.location_id = 0;   // 0 = unconfigured; set during commissioning
 
     c.display.brightness_pct = 85;
     c.display.sleep_min      = 5;

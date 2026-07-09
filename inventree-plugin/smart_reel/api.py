@@ -363,8 +363,10 @@ class ProvisionView(SmartReelAPIView):
                     name=token_name,
                     expiry=timezone.now().date() + datetime.timedelta(days=3650),
                 )
-        # Bind this token to the rack it controls (multi-unit identity).
-        token.set_metadata(services.TOKEN_RACK_KEY, rack.pk)
+            # Bind this token to the rack it controls (multi-unit identity).
+            # Inside the atomic block so a crash can't leave an authenticated
+            # token that is unbound to any rack (which would 409 on every call).
+            token.set_metadata(services.TOKEN_RACK_KEY, rack.pk)
 
         base = _public_base_url(request)
         payload = "SRPROV1:" + json.dumps(

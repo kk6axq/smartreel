@@ -453,21 +453,28 @@ def enqueue_locate(rack, slot_num: int, stock=None, part=None) -> dict:
     """Record a pending "light slot N" request on the rack. Idempotent on the
     (slot_num) target: a fresh locate for an already-queued slot refreshes it
     rather than stacking duplicates, so repeated button presses stay sane."""
-    prev = rack.get_metadata(LOCATE_QUEUE_KEY) or []
-    # Drop any existing locate for this slot so repeated presses don't stack,
-    # but keep ids monotonic across the whole (pre-dedupe) queue.
-    queue = [e for e in prev if e.get("slot_num") != slot_num]
-    next_id = max((e["id"] for e in prev), default=0) + 1
-    entry = {
-        "id": next_id,
-        "slot_num": slot_num,
-        "part": part_wire_id(part) if part is not None else None,
-        "part_name": part.full_name if part is not None else None,
-        "stock_id": stock.pk if stock is not None else None,
-        "at": timezone.now().isoformat(timespec="seconds"),
-    }
-    queue.append(entry)
-    rack.set_metadata(LOCATE_QUEUE_KEY, queue[-LOCATE_QUEUE_CAP:])
+    from stock.models import StockLocation
+
+    # Atomic read-modify-write under a row lock: concurrent locate requests
+    # must not read the same queue, compute the same next_id, and clobber each
+    # other. Mirrors log_anomaly().
+    with transaction.atomic():
+        rack = StockLocation.objects.select_for_update().get(pk=rack.pk)
+        prev = rack.get_metadata(LOCATE_QUEUE_KEY) or []
+        # Drop any existing locate for this slot so repeated presses don't stack,
+        # but keep ids monotonic across the whole (pre-dedupe) queue.
+        queue = [e for e in prev if e.get("slot_num") != slot_num]
+        next_id = max((e["id"] for e in prev), default=0) + 1
+        entry = {
+            "id": next_id,
+            "slot_num": slot_num,
+            "part": part_wire_id(part) if part is not None else None,
+            "part_name": part.full_name if part is not None else None,
+            "stock_id": stock.pk if stock is not None else None,
+            "at": timezone.now().isoformat(timespec="seconds"),
+        }
+        queue.append(entry)
+        rack.set_metadata(LOCATE_QUEUE_KEY, queue[-LOCATE_QUEUE_CAP:])
     logger.info("smartreel: rack %s locate slot %s (id=%s)", rack.pk, slot_num, next_id)
     return entry
 

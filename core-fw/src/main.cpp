@@ -296,6 +296,7 @@ static void handle_commit(uint8_t seq, const uint8_t* p, size_t len) {
 //  Firmware update receiver (arduino-pico OTA staging, validated)
 // =====================================================================
 static bool       s_fw_active   = false;
+static bool       s_fw_verified = false;   // set only after a passing FW_VERIFY
 static uint32_t   s_fw_total    = 0;
 static uint32_t   s_fw_received = 0;
 static sha256_ctx s_fw_sha;
@@ -315,6 +316,7 @@ static void handle_fw_begin(uint8_t seq, const uint8_t* p, size_t len) {
     sha256_init(&s_fw_sha);
     s_fw_received = 0;
     s_fw_active   = true;
+    s_fw_verified = false;
     Serial.printf("[fw] BEGIN size=%lu version=0x%08lX -- staging\n",
                   (unsigned long)s_fw_total, (unsigned long)version);
     send_ack(MSG_FW_BEGIN, seq);
@@ -356,17 +358,21 @@ static void handle_fw_verify(uint8_t seq) {
         return;
     }
     Serial.println("[fw] VERIFY ok");
+    s_fw_verified = true;
     send_ack(MSG_FW_VERIFY, seq);
 }
 
 static void handle_fw_commit(uint8_t seq) {
-    if (!s_fw_active) { send_error(MSG_FW_COMMIT, seq, ERR_FW_STATE); return; }
+    // Require a passing FW_VERIFY first: never flash an unhashed staged image,
+    // even if a buggy/rogue host skips VERIFY and jumps straight to COMMIT.
+    if (!s_fw_active || !s_fw_verified) { send_error(MSG_FW_COMMIT, seq, ERR_FW_STATE); return; }
     if (!Update.end(true)) {
         Serial.println("[fw] Update.end failed");
         send_error(MSG_FW_COMMIT, seq, ERR_BUSY);
         return;
     }
-    s_fw_active = false;
+    s_fw_active   = false;
+    s_fw_verified = false;
     Serial.println("[fw] COMMIT ok -- rebooting into new image");
     send_ack(MSG_FW_COMMIT, seq);
     delay(50);            // let the ACK flush onto the bus

@@ -83,3 +83,6 @@ SmartReel V2.kicad_pcb
 # IDE / editor
 .idea/
 .vscode/
+
+# Host-test build output
+tests/build/

@@ -11,14 +11,16 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sys
 import time
 import urllib.error
 import urllib.request
 from urllib.parse import quote
 
-BASE = "http://inventree.localhost"
-ADMIN = ("admin", "inventree")
+# Local dev-instance defaults; override via env for your own setup.
+BASE = os.getenv("INVENTREE_BASE", "http://inventree.localhost")
+ADMIN = (os.getenv("INVENTREE_USER", "admin"), os.getenv("INVENTREE_PASS", "inventree"))
 failures: list[str] = []
 
 

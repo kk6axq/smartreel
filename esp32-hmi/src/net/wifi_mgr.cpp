@@ -2,6 +2,7 @@
 #include "storage/config_store.h"
 #include "ui/app_state.h"
 #include "ui/status_bar.h"
+#include "util/lvgl_async.h"
 
 #include <Arduino.h>
 #include <WiFi.h>
@@ -13,6 +14,17 @@ static State        g_state = State::Disabled;
 static char         g_ip[20]  = "";
 static int32_t      g_rssi    = 0;
 
+// on_event() runs in the ESP-IDF WiFi event task, NOT the LVGL task, so it
+// must not touch app_state or LVGL directly. Marshal the online flag and the
+// status-bar update onto the LVGL task, matching inv_sync::set_online().
+static void post_online(bool online) {
+    ui::dispatch_on_lvgl([](void* v) {
+        bool on = (v != nullptr);
+        app::state().online = on;
+        ui::status_bar_set_online(on);
+    }, online ? (void*)1 : nullptr);
+}
+
 static void on_event(WiFiEvent_t event) {
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
@@ -20,8 +32,7 @@ static void on_event(WiFiEvent_t event) {
             g_state = State::Connected;
             snprintf(g_ip, sizeof(g_ip), "%s", WiFi.localIP().toString().c_str());
             g_rssi  = WiFi.RSSI();
-            app::state().online = true;
-            ui::status_bar_set_online(true);
+            post_online(true);
             log_i("WiFi connected: %s @ %d dBm", g_ip, (int)g_rssi);
             break;
 
@@ -32,8 +43,7 @@ static void on_event(WiFiEvent_t event) {
             g_state = State::Disconnected;
             g_ip[0] = 0;
             g_rssi  = 0;
-            app::state().online = false;
-            ui::status_bar_set_online(false);
+            post_online(false);
             // Arduino-ESP32's WiFi.begin auto-reconnects by default, so
             // we don't trigger anything here. Status will go back to
             // Connected when the AP comes back.

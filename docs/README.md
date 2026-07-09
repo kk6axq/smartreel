@@ -34,7 +34,6 @@ for detail and history but are not the authoritative manual:
   them at `0x30`–`0x35`** (see API reference for why).
 - `user-stories.md` — the behavioural source of truth for the workflows.
 - `known-bugs.md` — open and fixed issues.
-- `test-plan.md` — verification plan.
 
 ## Component layout (repository root)
 

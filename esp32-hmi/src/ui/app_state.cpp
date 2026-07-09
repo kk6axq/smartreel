@@ -141,9 +141,9 @@ static void seed(State& st) {
     st.active_pick_idx = -1;
     st.pick_out_slot = -1;
     st.load_step = LoadStep::Scan;
-    snprintf(st.wifi_ssid, sizeof(st.wifi_ssid), "labnet-2g");
-    snprintf(st.inv_url,   sizeof(st.inv_url),   "https://inv.lab.local");
-    st.inv_location_id = 42;
+    snprintf(st.wifi_ssid, sizeof(st.wifi_ssid), "");
+    snprintf(st.inv_url,   sizeof(st.inv_url),   "https://inventree.local");
+    st.inv_location_id = 0;   // 0 = unconfigured; set via the on-device config
     snprintf(st.fw_version, sizeof(st.fw_version), "v0.4.2");
     st.n_rack = 0;            // populated by rebuild_rack() once topology is known
     // Pick jobs come live from InvenTree (GET /pickjobs via inv_sync);
